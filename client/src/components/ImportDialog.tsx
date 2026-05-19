@@ -1,10 +1,10 @@
 import { useRef, useState } from 'react';
 import { useQueryClient, useMutation, useQuery } from '@tanstack/react-query';
-import { Upload, FileText, X } from 'lucide-react';
+import { Upload, FileText, X, ChevronDown } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { importApi, categoriesApi } from '@/lib/api';
 import { cn, formatCurrency, formatDate } from '@/lib/utils';
 import type { ParsedTransaction, Category } from '@/lib/types';
@@ -25,27 +25,44 @@ export function ImportDialog({ open, onOpenChange, year, month }: ImportDialogPr
   const [preview, setPreview] = useState<ParsedTransaction[] | null>(null);
   const [editedCategories, setEditedCategories] = useState<Record<number, number | null>>({});
   const [removedRows, setRemovedRows] = useState<Set<number>>(new Set());
+  const [duplicateRows, setDuplicateRows] = useState<Set<number>>(new Set());
+  const [zeroRows, setZeroRows] = useState<Set<number>>(new Set());
+  const [importResult, setImportResult] = useState<{ imported: number; skipped: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const { data: categories = [] } = useQuery({ queryKey: ['categories'], queryFn: categoriesApi.getAll });
 
   const parseMutation = useMutation({
     mutationFn: ({ file, bank }: { file: File; bank: Bank }) => importApi.parse(file, bank),
-    onSuccess: data => {
+    onSuccess: async data => {
       setPreview(data.transactions);
       setEditedCategories({});
-      setRemovedRows(new Set());
+      setDuplicateRows(new Set());
       setError(null);
+      // Pre-remove zero-amount rows
+      const zeroSet = new Set(data.transactions.map((tx, i) => tx.amount === 0 ? i : -1).filter(i => i !== -1));
+      setZeroRows(zeroSet);
+      // Check for duplicates against the target month and auto-skip them
+      try {
+        const { duplicates } = await importApi.checkDuplicates(data.transactions, year, month);
+        const dupSet = new Set(duplicates.map((isDup, i) => isDup ? i : -1).filter(i => i !== -1));
+        setDuplicateRows(dupSet);
+        setRemovedRows(new Set([...dupSet, ...zeroSet])); // pre-remove duplicates + zeros
+      } catch {
+        // Non-fatal: fall back to just zeros
+        setRemovedRows(new Set(zeroSet));
+      }
     },
     onError: (err: Error) => setError(`Parse failed: ${err.message}`),
   });
 
   const confirmMutation = useMutation({
     mutationFn: (txs: ParsedTransaction[]) => importApi.confirm(txs, year, month),
-    onSuccess: () => {
+    onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: ['transactions'] });
       qc.invalidateQueries({ queryKey: ['summary'] });
       qc.invalidateQueries({ queryKey: ['allocation'] });
+      setImportResult(result);
       setPreview(null);
       setFiles({});
       setError(null);
@@ -111,7 +128,10 @@ export function ImportDialog({ open, onOpenChange, year, month }: ImportDialogPr
           <div className="flex-1 overflow-auto">
             <div className="flex items-center justify-between mb-3">
               <p className="text-sm text-zinc-400">
-                {preview.length} parsed{removedRows.size > 0 && `, ${removedRows.size} skipped`}
+                {preview.length} parsed
+                {duplicateRows.size > 0 && <span className="text-amber-500"> · {duplicateRows.size} duplicate{duplicateRows.size !== 1 ? 's' : ''} skipped</span>}
+                {zeroRows.size > 0 && <span className="text-zinc-500"> · {zeroRows.size} zero-value skipped</span>}
+                {removedRows.size - duplicateRows.size - zeroRows.size > 0 && ` · ${removedRows.size - duplicateRows.size - zeroRows.size} manually skipped`}
               </p>
               <Button variant="ghost" size="sm" onClick={() => setPreview(null)}>← Back</Button>
             </div>
@@ -134,24 +154,29 @@ export function ImportDialog({ open, onOpenChange, year, month }: ImportDialogPr
                     return (
                       <tr key={i} className={cn('hover:bg-zinc-800/40', removed && 'opacity-30')}>
                         <td className="px-3 py-1.5 text-zinc-400 text-xs">{formatDate(tx.date)}</td>
-                        <td className="px-3 py-1.5 truncate max-w-[200px]">{tx.description}</td>
+                        <td className="px-3 py-1.5 max-w-[200px]">
+                          <div className="flex items-center gap-1.5">
+                            <span className="truncate">{tx.description}</span>
+                            {duplicateRows.has(i) && (
+                              <span className="shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-400 border border-amber-800/50">duplicate</span>
+                            )}
+                            {zeroRows.has(i) && (
+                              <span className="shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded bg-zinc-700/60 text-zinc-400 border border-zinc-600/50">zero</span>
+                            )}
+                          </div>
+                        </td>
                         <td className={cn('px-3 py-1.5 font-mono tabular-nums text-right text-xs',
                           tx.type === 'income' ? 'text-emerald-500' : 'text-rose-400'
                         )}>
                           {tx.type === 'income' ? '+' : '-'}{formatCurrency(tx.amount)}
                         </td>
                         <td className="px-3 py-1.5">
-                          <Select
-                            value={catId ? String(catId) : 'none'}
-                            onValueChange={v => setEditedCategories(ec => ({ ...ec, [i]: v === 'none' ? null : parseInt(v) }))}
+                          <CategoryPicker
+                            categories={txCats}
+                            value={catId ?? null}
+                            onChange={v => setEditedCategories(ec => ({ ...ec, [i]: v }))}
                             disabled={removed}
-                          >
-                            <SelectTrigger className="h-6 text-xs"><SelectValue placeholder="Uncategorized" /></SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="none" className="text-xs">Uncategorized</SelectItem>
-                              {txCats.map(c => <SelectItem key={c.id} value={String(c.id)} className="text-xs">{c.display_name}</SelectItem>)}
-                            </SelectContent>
-                          </Select>
+                          />
                         </td>
                         <td className="px-2 py-1.5">
                           <button
@@ -196,8 +221,12 @@ export function ImportDialog({ open, onOpenChange, year, month }: ImportDialogPr
           ) : (
             <>
               <Button variant="ghost" onClick={() => setPreview(null)}>Back</Button>
-              <Button onClick={handleConfirm} disabled={confirmMutation.isPending}>
-                {confirmMutation.isPending ? 'Importing…' : `Import ${preview.length - removedRows.size} transactions`}
+              <Button onClick={handleConfirm} disabled={confirmMutation.isPending || preview.length - removedRows.size === 0}>
+                {confirmMutation.isPending
+                  ? 'Importing…'
+                  : preview.length - removedRows.size === 0
+                  ? 'Nothing to import'
+                  : `Import ${preview.length - removedRows.size} transaction${preview.length - removedRows.size !== 1 ? 's' : ''}`}
               </Button>
             </>
           )}
@@ -232,5 +261,65 @@ function FileDropZone({ bank, file, onFileChange }: { bank: Bank; file?: File; o
         </div>
       )}
     </div>
+  );
+}
+
+function CategoryPicker({ categories, value, onChange, disabled }: {
+  categories: Category[];
+  value: number | null;
+  onChange: (v: number | null) => void;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = categories.find(c => c.id === value) ?? null;
+
+  return (
+    <Popover open={open && !disabled} onOpenChange={v => !disabled && setOpen(v)}>
+      <PopoverTrigger asChild>
+        <button
+          disabled={disabled}
+          className={cn(
+            'flex items-center gap-1.5 h-6 px-2 rounded border text-xs w-full min-w-[140px] transition-colors',
+            'border-zinc-700 bg-zinc-900 hover:border-zinc-500',
+            disabled && 'opacity-40 cursor-not-allowed'
+          )}
+        >
+          {selected ? (
+            <>
+              <span className="shrink-0 w-2 h-2 rounded-full" style={{ backgroundColor: selected.color ?? '#71717a' }} />
+              <span className="truncate flex-1 text-left" style={{ color: selected.color ?? '#a1a1aa' }}>{selected.display_name}</span>
+            </>
+          ) : (
+            <span className="flex-1 text-left text-zinc-500">Uncategorized</span>
+          )}
+          <ChevronDown className="shrink-0 w-3 h-3 text-zinc-500 ml-auto" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-48 p-1" align="start">
+        <button
+          onClick={() => { onChange(null); setOpen(false); }}
+          className={cn(
+            'flex items-center gap-2 w-full px-2 py-1 rounded text-xs text-zinc-400 hover:bg-zinc-800 transition-colors',
+            value === null && 'bg-zinc-800'
+          )}
+        >
+          <span className="w-2 h-2 rounded-full bg-zinc-600 shrink-0" />
+          Uncategorized
+        </button>
+        {categories.map(c => (
+          <button
+            key={c.id}
+            onClick={() => { onChange(c.id); setOpen(false); }}
+            className={cn(
+              'flex items-center gap-2 w-full px-2 py-1 rounded text-xs hover:bg-zinc-800 transition-colors',
+              value === c.id && 'bg-zinc-800'
+            )}
+          >
+            <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: c.color ?? '#71717a' }} />
+            <span style={{ color: c.color ?? '#a1a1aa' }}>{c.display_name}</span>
+          </button>
+        ))}
+      </PopoverContent>
+    </Popover>
   );
 }

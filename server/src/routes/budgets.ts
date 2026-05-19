@@ -14,7 +14,8 @@ router.get('/', (req: Request, res: Response) => {
   }
 
   const budgets = db.prepare(`
-    SELECT b.*, c.display_name, c.name as category_name, c.type as category_type, c.color
+    SELECT b.id, b.month_id, b.category_id, b.planned, b.is_active,
+           c.display_name, c.name as category_name, c.type as category_type, c.color
     FROM budgets b
     JOIN categories c ON b.category_id = c.id
     WHERE b.month_id = ?
@@ -25,18 +26,24 @@ router.get('/', (req: Request, res: Response) => {
 
 router.put('/', (req: Request, res: Response) => {
   const db = getDb();
-  const { month_id, category_id, planned } = req.body as { month_id: number; category_id: number; planned: number };
+  const { month_id, category_id, planned, is_active } = req.body as {
+    month_id: number; category_id: number; planned: number; is_active?: 0 | 1 | boolean;
+  };
 
   if (!month_id || !category_id || planned === undefined) {
     res.status(400).json({ error: 'month_id, category_id, and planned are required' });
     return;
   }
 
+  const active = is_active === undefined ? 1 : (is_active ? 1 : 0);
+
   db.prepare(`
-    INSERT INTO budgets (month_id, category_id, planned)
-    VALUES (?, ?, ?)
-    ON CONFLICT(month_id, category_id) DO UPDATE SET planned = excluded.planned
-  `).run(month_id, category_id, planned);
+    INSERT INTO budgets (month_id, category_id, planned, is_active)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(month_id, category_id) DO UPDATE SET
+      planned   = excluded.planned,
+      is_active = excluded.is_active
+  `).run(month_id, category_id, planned, active);
 
   const budget = db.prepare('SELECT * FROM budgets WHERE month_id = ? AND category_id = ?').get(month_id, category_id);
   res.json(budget);
@@ -66,17 +73,19 @@ router.post('/copy-from-previous', (req: Request, res: Response) => {
     return;
   }
 
-  const prevBudgets = db.prepare('SELECT * FROM budgets WHERE month_id = ?').all(prevRecord.id) as Array<{ category_id: number; planned: number }>;
+  const prevBudgets = db.prepare('SELECT * FROM budgets WHERE month_id = ?').all(prevRecord.id) as Array<{ category_id: number; planned: number; is_active: number }>;
 
   const upsert = db.prepare(`
-    INSERT INTO budgets (month_id, category_id, planned)
-    VALUES (?, ?, ?)
-    ON CONFLICT(month_id, category_id) DO UPDATE SET planned = excluded.planned
+    INSERT INTO budgets (month_id, category_id, planned, is_active)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(month_id, category_id) DO UPDATE SET
+      planned   = excluded.planned,
+      is_active = excluded.is_active
   `);
 
   const copyAll = db.transaction(() => {
     for (const b of prevBudgets) {
-      upsert.run(month_id, b.category_id, b.planned);
+      upsert.run(month_id, b.category_id, b.planned, b.is_active ?? 1);
     }
   });
 

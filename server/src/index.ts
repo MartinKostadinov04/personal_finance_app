@@ -11,12 +11,14 @@ const DB_PATH = path.resolve(process.env.DATABASE_PATH ?? './data/finance.db');
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
 import { initDb, getDb } from './db/index';
+import { resolveMonthId } from './db/months';
 initDb(DB_PATH);
 
 import categoriesRouter from './routes/categories';
 import monthsRouter from './routes/months';
 import transactionsRouter from './routes/transactions';
 import budgetsRouter from './routes/budgets';
+import stableBudgetsRouter from './routes/stable-budgets';
 import importRouter from './routes/import';
 import exportRouter from './routes/export';
 import analyticsRouter from './routes/analytics';
@@ -32,6 +34,7 @@ app.use('/api/categories', categoriesRouter);
 app.use('/api/months', monthsRouter);
 app.use('/api/transactions', transactionsRouter);
 app.use('/api/budgets', budgetsRouter);
+app.use('/api/stable-budgets', stableBudgetsRouter);
 app.use('/api/import', importRouter);
 app.use('/api/export', exportRouter);
 app.use('/api/analytics', analyticsRouter);
@@ -42,7 +45,7 @@ app.get('/api/health', (_req, res) => res.json({ ok: true }));
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 
-  // Ensure current month (April 2026) exists
-  const db = getDb();
-  db.prepare('INSERT OR IGNORE INTO months (year, month) VALUES (?, ?)').run(2026, 4);
+  // Ensure the current real-world month exists on boot
+  const now = new Date();
+  resolveMonthId(getDb(), now.getFullYear(), now.getMonth() + 1);
 });

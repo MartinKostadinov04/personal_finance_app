@@ -5,13 +5,26 @@ const router = Router();
 
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-// GET /api/analytics/trend
-// Returns per-month income/expenses/saved for all months that have data
-router.get('/trend', (_req: Request, res: Response) => {
+// GET /api/analytics/trend?fromYear=&fromMonth=&toYear=&toMonth=
+// Returns per-month income/expenses/saved, optionally filtered to a date range.
+// All four params are optional; omitting them returns all months with data.
+router.get('/trend', (req: Request, res: Response) => {
   const db = getDb();
-  const months = db.prepare(
+
+  const fy = req.query.fromYear  ? parseInt(req.query.fromYear  as string) : null;
+  const fm = req.query.fromMonth ? parseInt(req.query.fromMonth as string) : null;
+  const ty = req.query.toYear    ? parseInt(req.query.toYear    as string) : null;
+  const tm = req.query.toMonth   ? parseInt(req.query.toMonth   as string) : null;
+
+  const allMonths = db.prepare(
     'SELECT * FROM months ORDER BY year ASC, month ASC'
   ).all() as { id: number; year: number; month: number }[];
+
+  const months = allMonths.filter(m => {
+    const after  = fy === null || (m.year > fy) || (m.year === fy && m.month >= (fm ?? 1));
+    const before = ty === null || (m.year < ty) || (m.year === ty && m.month <= (tm ?? 12));
+    return after && before;
+  });
 
   const incomeStmt  = db.prepare("SELECT COALESCE(SUM(amount),0) as total FROM transactions WHERE month_id=? AND type='income'");
   const expenseStmt = db.prepare("SELECT COALESCE(SUM(amount),0) as total FROM transactions WHERE month_id=? AND type='expense'");

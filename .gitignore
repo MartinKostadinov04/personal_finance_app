@@ -10,3 +10,13 @@ server/data/*.db-wal
 *.js.map
 .DS_Store
 .claude/
+
+# Financial data files
+*.csv
+*.xlsx
+*.xls
+*.ods
+*.pdf
+*.ofx
+*.qfx
+*.qif

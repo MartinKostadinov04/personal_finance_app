@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import ExcelJS from 'exceljs';
 import { getDb } from '../db/index';
+import { computeBalances } from './months';
 import { Month } from '../types';
 
 const router = Router();
@@ -60,9 +61,10 @@ router.get('/:year/:month', async (req: Request, res: Response) => {
   const income = transactions.filter(t => t['type'] === 'income').reduce((s, t) => s + (t['amount'] as number), 0);
   const expenses = transactions.filter(t => t['type'] === 'expense').reduce((s, t) => s + (t['amount'] as number), 0);
 
+  const balances = computeBalances(db, year, month) ?? { start_balance: 0, end_balance: 0 };
   sumSheet.addRow(['Period', `${year}-${String(month).padStart(2, '0')}`]);
-  sumSheet.addRow(['Start Balance', monthRecord.start_balance]);
-  sumSheet.addRow(['End Balance', monthRecord.end_balance]);
+  sumSheet.addRow(['Start Balance', balances.start_balance]);
+  sumSheet.addRow(['End Balance', balances.end_balance]);
   sumSheet.addRow(['Total Income', income]);
   sumSheet.addRow(['Total Expenses', expenses]);
   sumSheet.addRow(['Saved', income - expenses]);

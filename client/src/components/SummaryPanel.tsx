@@ -24,20 +24,6 @@ export function SummaryPanel({ type, current, previous }: SummaryPanelProps) {
         <span className="text-right font-mono">Diff</span>
       </div>
 
-      {/* Totals row */}
-      <div className="grid grid-cols-4 gap-2 py-1.5 border-b border-zinc-800 mb-1 font-medium text-xs">
-        <span className="col-span-1 text-zinc-300">Total</span>
-        <span className="text-right font-mono tabular-nums text-zinc-300">{formatCurrency(totalPrev)}</span>
-        <span className="text-right font-mono tabular-nums text-zinc-300">{formatCurrency(totalActual)}</span>
-        <span className={cn('text-right font-mono tabular-nums',
-          type === 'expense'
-            ? (totalDiff > 0 ? 'text-rose-500' : totalDiff < 0 ? 'text-emerald-500' : 'text-zinc-400')
-            : (totalDiff > 0 ? 'text-emerald-500' : totalDiff < 0 ? 'text-rose-500' : 'text-zinc-400')
-        )}>
-          {totalDiff > 0 ? '+' : ''}{formatCurrency(totalDiff)}
-        </span>
-      </div>
-
       {filtered.map(cat => {
         const prev = prevMap.get(cat.category_id) ?? 0;
         const diff = cat.total - prev;
@@ -55,6 +41,20 @@ export function SummaryPanel({ type, current, previous }: SummaryPanelProps) {
           </div>
         );
       })}
+
+      {/* Totals row — pinned to the bottom with a top border */}
+      <div className="grid grid-cols-4 gap-2 py-1.5 border-t border-zinc-700 mt-1 font-medium text-xs">
+        <span className="col-span-1 text-zinc-300">Total</span>
+        <span className="text-right font-mono tabular-nums text-zinc-300">{formatCurrency(totalPrev)}</span>
+        <span className="text-right font-mono tabular-nums text-zinc-300">{formatCurrency(totalActual)}</span>
+        <span className={cn('text-right font-mono tabular-nums',
+          type === 'expense'
+            ? (totalDiff > 0 ? 'text-rose-500' : totalDiff < 0 ? 'text-emerald-500' : 'text-zinc-400')
+            : (totalDiff > 0 ? 'text-emerald-500' : totalDiff < 0 ? 'text-rose-500' : 'text-zinc-400')
+        )}>
+          {totalDiff > 0 ? '+' : ''}{formatCurrency(totalDiff)}
+        </span>
+      </div>
     </div>
   );
 }

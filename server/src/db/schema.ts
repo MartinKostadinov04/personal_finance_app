@@ -35,7 +35,12 @@ CREATE TABLE IF NOT EXISTS transactions (
   bank TEXT NOT NULL,
   manually_reviewed INTEGER DEFAULT 0,
   created_at TEXT DEFAULT (datetime('now'))
-)`;
+);
+CREATE INDEX IF NOT EXISTS idx_transactions_month_id    ON transactions(month_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_category_id ON transactions(category_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_date        ON transactions(date);
+CREATE INDEX IF NOT EXISTS idx_transactions_raw_desc    ON transactions(raw_description);
+`;
 
 export const BUDGETS_SCHEMA = `
 CREATE TABLE IF NOT EXISTS budgets (
@@ -43,7 +48,18 @@ CREATE TABLE IF NOT EXISTS budgets (
   month_id INTEGER NOT NULL REFERENCES months(id) ON DELETE CASCADE,
   category_id INTEGER NOT NULL REFERENCES categories(id),
   planned REAL NOT NULL DEFAULT 0,
+  is_active INTEGER NOT NULL DEFAULT 1,
   UNIQUE(month_id, category_id)
+)`;
+
+// Cross-month budget defaults — one row per category, applies to every month
+// unless overridden by a monthly `budgets` row for the same category.
+export const STABLE_BUDGETS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS stable_budgets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  category_id INTEGER NOT NULL UNIQUE REFERENCES categories(id),
+  planned REAL NOT NULL DEFAULT 0,
+  is_active INTEGER NOT NULL DEFAULT 1
 )`;
 
 export const MERCHANT_RULES_SCHEMA = `

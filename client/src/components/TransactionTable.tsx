@@ -2,7 +2,7 @@ import { useState, useMemo, useRef, memo } from 'react';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import {
   useReactTable, getCoreRowModel, getPaginationRowModel, getSortedRowModel,
-  createColumnHelper, flexRender, type SortingState,
+  createColumnHelper, flexRender, type SortingState, type PaginationState,
 } from '@tanstack/react-table';
 import { Pencil, Trash2, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -12,6 +12,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sh
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { CategoryBadge } from './CategoryBadge';
 import { BankBadge } from './BankBadge';
+import { DatePicker } from './DatePicker';
 import { transactionsApi, categoriesApi } from '@/lib/api';
 import { cn, formatCurrency, formatDate } from '@/lib/utils';
 import type { Transaction, Category } from '@/lib/types';
@@ -35,6 +36,7 @@ interface TransactionTableProps {
 export const TransactionTable = memo(function TransactionTable({ monthId, type, search, categoryFilter }: TransactionTableProps) {
   const qc = useQueryClient();
   const [sorting, setSorting] = useState<SortingState>([{ id: 'date', desc: true }]);
+  const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 50 });
   const [editTx, setEditTx] = useState<Transaction | null>(null);
 
   const { data: rawTransactions, isLoading } = useQuery({
@@ -163,12 +165,13 @@ export const TransactionTable = memo(function TransactionTable({ monthId, type, 
   const table = useReactTable({
     data: transactions,
     columns,
-    state: { sorting },
+    state: { sorting, pagination },
     onSortingChange: setSorting,
+    onPaginationChange: setPagination,
+    autoResetPageIndex: false,
     getCoreRowModel: _getCoreRowModel,
     getPaginationRowModel: _getPaginationRowModel,
     getSortedRowModel: _getSortedRowModel,
-    initialState: { pagination: { pageSize: 50 } },
   });
 
   const total = transactions.filter(t => t.type === type).reduce((s, t) => s + t.amount, 0);
@@ -264,12 +267,15 @@ function EditSheet({ tx, categories, onClose, onSaved }: { tx: Transaction; cate
   const save = async () => {
     setSaving(true);
     try {
+      const d = new Date(form.date + 'T00:00:00');
       await transactionsApi.update(tx.id, {
         date: form.date,
         description: form.description,
         amount: parseFloat(form.amount),
         category_id: form.category_id ? parseInt(form.category_id) : null,
         bank: form.bank as Transaction['bank'],
+        year: d.getFullYear(),
+        month: d.getMonth() + 1,
       });
       onSaved();
     } finally { setSaving(false); }
@@ -282,7 +288,7 @@ function EditSheet({ tx, categories, onClose, onSaved }: { tx: Transaction; cate
         <div className="mt-6 space-y-4">
           <div className="space-y-1.5">
             <label className="text-xs text-zinc-400">Date</label>
-            <Input type="date" value={form.date} onChange={e => setForm(f => ({ ...f, date: e.target.value }))} />
+            <DatePicker value={form.date} onChange={date => setForm(f => ({ ...f, date }))} />
           </div>
           <div className="space-y-1.5">
             <label className="text-xs text-zinc-400">Description</label>
@@ -313,7 +319,8 @@ function EditSheet({ tx, categories, onClose, onSaved }: { tx: Transaction; cate
               </SelectContent>
             </Select>
           </div>
-          <div className="flex gap-2 pt-2">
+
+<div className="flex gap-2 pt-2">
             <Button variant="ghost" className="flex-1" onClick={onClose}>Cancel</Button>
             <Button className="flex-1" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save'}</Button>
           </div>

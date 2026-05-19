@@ -9,25 +9,10 @@ export function formatCurrency(amount: number): string {
   return `€${Math.abs(amount).toFixed(2)}`;
 }
 
-export function formatDate(isoDate: string): string {
-  const [year, month, day] = isoDate.split('-');
-  return `${day}/${month}/${year.slice(2)}`;
-}
+// Date helpers live in lib/dates.ts — re-exported here for back-compat.
+export { formatDate, formatMonthYear, getMonthShort, MONTH_SHORT as MONTH_NAMES_SHORT } from './dates';
 
-const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December'];
-
-const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-export function formatMonthYear(year: number, month: number): string {
-  return `${MONTH_NAMES[month - 1]} ${year}`;
-}
-
-export function getMonthShort(month: number): string {
-  return MONTH_SHORT[month - 1];
-}
-
+import { MONTH_SHORT } from './dates';
 export function getMonthNames(): string[] {
   return MONTH_SHORT;
 }

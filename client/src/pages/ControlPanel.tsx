@@ -18,10 +18,10 @@ import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { CategoryBadge } from '@/components/CategoryBadge';
-import { categoriesApi, budgetsApi, monthsApi, exportApi, merchantRulesApi, transactionsApi } from '@/lib/api';
+import { categoriesApi, budgetsApi, stableBudgetsApi, monthsApi, exportApi, merchantRulesApi, transactionsApi } from '@/lib/api';
 import { cn, formatCurrency, formatDate } from '@/lib/utils';
 import { useMonth } from '@/contexts/MonthContext';
-import type { Category, Budget, MerchantRule, Transaction } from '@/lib/types';
+import type { Category, Budget, StableBudget, MerchantRule, Transaction } from '@/lib/types';
 
 export function ControlPanel() {
   const { year, month, setMonth } = useMonth();
@@ -38,7 +38,7 @@ export function ControlPanel() {
         <TabsContent value="categories"><CategoriesTab /></TabsContent>
         <TabsContent value="budgets"><BudgetsTab year={year} month={month} onMonthChange={setMonth} /></TabsContent>
         <TabsContent value="recurring"><RecurringTab /></TabsContent>
-        <TabsContent value="data"><DataTab year={year} month={month} /></TabsContent>
+        <TabsContent value="data"><DataTab /></TabsContent>
       </Tabs>
     </div>
   );
@@ -199,72 +199,157 @@ function DeleteCategoryButton({ category, onDeleted }: { category: Category; onD
 
 function BudgetsTab({ year, month, onMonthChange }: { year: number; month: number; onMonthChange: (y: number, m: number) => void }) {
   const qc = useQueryClient();
-  const { data: monthRecord } = useQuery({ queryKey: ['month', year, month], queryFn: () => monthsApi.getOrCreate(year, month) });
+  const [scope, setScope] = useState<'stable' | 'monthly'>('monthly');
+
+  const { data: monthRecord } = useQuery({
+    queryKey: ['month', year, month],
+    queryFn: () => monthsApi.getOrCreate(year, month),
+    enabled: scope === 'monthly',
+  });
   const { data: categories = [] } = useQuery({ queryKey: ['categories'], queryFn: categoriesApi.getAll });
   const monthId = monthRecord?.id ?? 0;
-  const { data: budgets = [] } = useQuery({ queryKey: ['budgets', monthId], queryFn: () => budgetsApi.getAll(monthId), enabled: !!monthId });
-  const { data: summary } = useQuery({ queryKey: ['summary', year, month], queryFn: () => monthsApi.getSummary(year, month) });
+  const { data: monthlyBudgets = [] } = useQuery({
+    queryKey: ['budgets', monthId],
+    queryFn: () => budgetsApi.getAll(monthId),
+    enabled: scope === 'monthly' && !!monthId,
+  });
+  const { data: stableBudgets = [] } = useQuery({
+    queryKey: ['stable-budgets'],
+    queryFn: stableBudgetsApi.getAll,
+  });
 
   const allCats = (categories as Category[]).filter(c => c.is_active);
-  const budgetMap = new Map((budgets as Budget[]).map(b => [b.category_id, b]));
-  const actualMap = new Map((summary?.byCategory ?? []).map((c: { category_id: number; total: number }) => [c.category_id, c.total]));
+  const expenseCats = allCats.filter(c => c.type === 'expense');
+  const incomeCats = allCats.filter(c => c.type === 'income');
+
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ['budgets'] });
+    qc.invalidateQueries({ queryKey: ['stable-budgets'] });
+    qc.invalidateQueries({ queryKey: ['summary'] });
+  };
 
   const copyPrev = async () => {
     await budgetsApi.copyFromPrevious(monthId);
-    qc.invalidateQueries({ queryKey: ['budgets'] });
-    qc.invalidateQueries({ queryKey: ['summary', year, month] });
+    invalidate();
+  };
+
+  const budgetMap = new Map((monthlyBudgets as Budget[]).map(b => [b.category_id, b]));
+  const stableMap = new Map((stableBudgets as StableBudget[]).map(b => [b.category_id, b]));
+
+  const getRow = (catId: number): { planned: number; is_active: boolean } => {
+    if (scope === 'monthly') {
+      const b = budgetMap.get(catId);
+      return b ? { planned: b.planned, is_active: !!b.is_active } : { planned: 0, is_active: true };
+    }
+    const s = stableMap.get(catId);
+    return s ? { planned: s.planned, is_active: !!s.is_active } : { planned: 0, is_active: true };
+  };
+
+  const save = async (catId: number, planned: number, is_active: boolean) => {
+    if (scope === 'monthly') {
+      if (!monthId) return;
+      await budgetsApi.upsert({ month_id: monthId, category_id: catId, planned, is_active });
+    } else {
+      await stableBudgetsApi.upsert({ category_id: catId, planned, is_active });
+    }
+    invalidate();
   };
 
   return (
-    <Card className="p-4">
-      <div className="flex items-center justify-between mb-4">
-        <MonthYearPicker value={{ year, month }} onChange={onMonthChange} />
-        <Button size="sm" variant="outline" onClick={copyPrev}>Copy from previous month</Button>
+    <Card className="p-4 space-y-4">
+      <div className="flex items-center justify-between">
+        <div className="inline-flex rounded-md border border-zinc-800 p-0.5 text-xs">
+          <button
+            onClick={() => setScope('stable')}
+            className={cn('px-3 py-1 rounded transition-colors', scope === 'stable' ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-400 hover:text-zinc-200')}
+          >
+            Stable
+          </button>
+          <button
+            onClick={() => setScope('monthly')}
+            className={cn('px-3 py-1 rounded transition-colors', scope === 'monthly' ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-400 hover:text-zinc-200')}
+          >
+            Monthly
+          </button>
+        </div>
+        {scope === 'monthly' && (
+          <div className="flex items-center gap-2">
+            <MonthYearPicker value={{ year, month }} onChange={onMonthChange} />
+            <Button size="sm" variant="outline" onClick={copyPrev}>Copy from previous month</Button>
+          </div>
+        )}
       </div>
-      <div className="text-xs text-zinc-400 grid grid-cols-4 gap-3 pb-2 border-b border-zinc-800 mb-1 uppercase tracking-wider">
-        <span className="col-span-1">Category</span>
-        <span>Type</span>
-        <span className="text-right">Planned</span>
-        <span className="text-right">Actual</span>
-      </div>
-      <div className="space-y-1">
-        {allCats.map(cat => {
-          const budget = budgetMap.get(cat.id);
-          const actual = actualMap.get(cat.id) ?? 0;
-          return (
-            <BudgetRow key={cat.id} category={cat} planned={budget?.planned ?? 0} actual={actual} monthId={monthId} onSaved={() => qc.invalidateQueries({ queryKey: ['budgets'] })} />
-          );
-        })}
+
+      <div className="grid grid-cols-2 gap-4">
+        <BudgetTable title="Expenses" categories={expenseCats} getRow={getRow} onSave={save} />
+        <BudgetTable title="Income" categories={incomeCats} getRow={getRow} onSave={save} />
       </div>
     </Card>
   );
 }
 
-function BudgetRow({ category, planned, actual, monthId, onSaved }: { category: Category; planned: number; actual: number; monthId: number; onSaved: () => void }) {
-  const [value, setValue] = useState(String(planned || ''));
-  const diff = actual - (parseFloat(value) || 0);
+function BudgetTable({ title, categories, getRow, onSave }: {
+  title: string;
+  categories: Category[];
+  getRow: (catId: number) => { planned: number; is_active: boolean };
+  onSave: (catId: number, planned: number, is_active: boolean) => void | Promise<void>;
+}) {
+  return (
+    <div>
+      <h3 className="text-sm font-medium uppercase tracking-wider text-zinc-400 mb-2">{title}</h3>
+      <div className="text-xs text-zinc-500 grid grid-cols-[1fr_100px_60px] gap-3 pb-2 border-b border-zinc-800 mb-1 uppercase tracking-wider">
+        <span>Category</span>
+        <span className="text-right">Planned</span>
+        <span className="text-right">Active</span>
+      </div>
+      <div className="space-y-1">
+        {categories.map(cat => {
+          const row = getRow(cat.id);
+          return <BudgetRow key={cat.id} category={cat} planned={row.planned} isActive={row.is_active} onSave={onSave} />;
+        })}
+      </div>
+    </div>
+  );
+}
 
-  const save = async () => {
+function BudgetRow({ category, planned, isActive, onSave }: {
+  category: Category;
+  planned: number;
+  isActive: boolean;
+  onSave: (catId: number, planned: number, is_active: boolean) => void | Promise<void>;
+}) {
+  const [value, setValue] = useState(String(planned || ''));
+  const [active, setActive] = useState(isActive);
+
+  useEffect(() => { setValue(String(planned || '')); }, [planned]);
+  useEffect(() => { setActive(isActive); }, [isActive]);
+
+  const savePlanned = () => {
     const p = parseFloat(value) || 0;
-    await budgetsApi.upsert({ month_id: monthId, category_id: category.id, planned: p });
-    onSaved();
+    if (p === planned) return;
+    onSave(category.id, p, active);
+  };
+
+  const toggleActive = (v: boolean) => {
+    setActive(v);
+    const p = parseFloat(value) || 0;
+    onSave(category.id, p, v);
   };
 
   return (
-    <div className="grid grid-cols-4 gap-3 items-center py-1.5 hover:bg-zinc-800/30 rounded px-1 -mx-1">
-      <span className="text-sm">{category.display_name}</span>
-      <span className="text-xs text-zinc-500">{category.type}</span>
+    <div className="grid grid-cols-[1fr_100px_60px] gap-3 items-center py-1.5 hover:bg-zinc-800/30 rounded px-1 -mx-1">
+      <span className="text-sm truncate">{category.display_name}</span>
       <Input
         type="number" step="0.01" min="0"
         value={value}
         onChange={e => setValue(e.target.value)}
-        onBlur={save}
+        onBlur={savePlanned}
         className="h-7 text-xs font-mono text-right"
         placeholder="0.00"
       />
-      <span className={`font-mono tabular-nums text-xs text-right ${diff > 0 ? 'text-rose-400' : diff < 0 ? 'text-emerald-500' : 'text-zinc-400'}`}>
-        {formatCurrency(actual)}
-      </span>
+      <div className="flex justify-end">
+        <Switch checked={active} onCheckedChange={toggleActive} />
+      </div>
     </div>
   );
 }
@@ -836,99 +921,135 @@ function EditRuleDialog({ rule, onOpenChange }: {
 
 /* ─── Data Tab ─── */
 
-function DataTab({ year, month }: { year: number; month: number }) {
-  const qc = useQueryClient();
-  const { data: monthRecord } = useQuery({ queryKey: ['month', year, month], queryFn: () => monthsApi.getOrCreate(year, month) });
-  const [confirmText, setConfirmText] = useState('');
-  const monthLabel = `${year}-${String(month).padStart(2, '0')}`;
+type DataOperation = 'export' | 'delete';
 
-  const toggleStatus = async () => {
-    await monthsApi.update(year, month, { status: monthRecord?.status === 'closed' ? 'active' : 'closed' });
-    qc.invalidateQueries({ queryKey: ['month', year, month] });
+function DataTab() {
+  const qc = useQueryClient();
+  const { year: ctxYear, month: ctxMonth } = useMonth();
+  const todayYear = new Date().getFullYear();
+  const todayMonth = new Date().getMonth() + 1;
+  const [selYear, setSelYear] = useState(todayYear);
+  const [selMonth, setSelMonth] = useState(todayMonth);
+  const [operation, setOperation] = useState<DataOperation | null>(null);
+  const [confirmText, setConfirmText] = useState('');
+  const [deleting, setDeleting] = useState(false);
+
+  const monthLabel = `${selYear}-${String(selMonth).padStart(2, '0')}`;
+
+  const { data: monthRecord } = useQuery({
+    queryKey: ['month', selYear, selMonth],
+    queryFn: () => monthsApi.getOrCreate(selYear, selMonth),
+    enabled: operation === 'delete',
+  });
+
+  // Reset confirm text when month or operation changes
+  useEffect(() => { setConfirmText(''); }, [selYear, selMonth, operation]);
+
+  const handleExport = () => {
+    exportApi.download(selYear, selMonth);
   };
 
-  const clearAll = async () => {
-    if (confirmText !== monthLabel) return;
-    const { data: txs } = await import('@/lib/api').then(m => ({ data: m.transactionsApi }));
-    const all = await txs.getAll({ monthId: monthRecord?.id });
-    await Promise.all(all.map((t: { id: number }) => txs.delete(t.id)));
-    qc.invalidateQueries({ queryKey: ['transactions'] });
-    qc.invalidateQueries({ queryKey: ['summary'] });
-    qc.invalidateQueries({ queryKey: ['allocation'] });
-    setConfirmText('');
+  const handleDelete = async () => {
+    if (confirmText !== monthLabel || !monthRecord) return;
+    setDeleting(true);
+    try {
+      const all = await transactionsApi.getAll({ monthId: monthRecord.id });
+      await Promise.all(all.map((t: { id: number }) => transactionsApi.delete(t.id)));
+      qc.invalidateQueries({ queryKey: ['transactions'] });
+      qc.invalidateQueries({ queryKey: ['summary'] });
+      qc.invalidateQueries({ queryKey: ['allocation'] });
+      setConfirmText('');
+      setOperation(null);
+    } finally {
+      setDeleting(false);
+    }
   };
 
   return (
-    <div className="space-y-4 max-w-xl">
+    <div className="space-y-5 max-w-xl">
+      {/* Month selector */}
       <Card className="p-4">
-        <h3 className="text-sm font-medium mb-3">Month Management</h3>
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm text-zinc-300">{monthLabel}</p>
-            <Badge variant="outline" className={monthRecord?.status === 'closed' ? 'text-zinc-500 border-zinc-700' : 'text-emerald-500 border-emerald-700'}>
-              {monthRecord?.status ?? 'active'}
-            </Badge>
-          </div>
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button size="sm" variant="outline">
-                {monthRecord?.status === 'closed' ? 'Reopen Month' : 'Close Month'}
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>{monthRecord?.status === 'closed' ? 'Reopen' : 'Close'} {monthLabel}?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  {monthRecord?.status === 'closed'
-                    ? 'This will allow editing transactions again.'
-                    : 'This will lock all transactions. You can still view but not edit.'}
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction onClick={toggleStatus}>Confirm</AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-medium">Select Month</h3>
+          {(selYear !== todayYear || selMonth !== todayMonth) && (
+            <button
+              onClick={() => { setSelYear(todayYear); setSelMonth(todayMonth); }}
+              className="text-xs text-zinc-400 hover:text-zinc-200 transition-colors"
+            >
+              ↩ This month
+            </button>
+          )}
         </div>
+        <MonthYearPicker value={{ year: selYear, month: selMonth }} onChange={(y, m) => { setSelYear(y); setSelMonth(m); }} />
       </Card>
 
+      {/* Operation picker */}
       <Card className="p-4">
-        <h3 className="text-sm font-medium mb-3">Export</h3>
-        <Button size="sm" variant="outline" onClick={() => exportApi.download(year, month)}>
-          Export {monthLabel} as Excel
-        </Button>
-      </Card>
-
-      <Card className="p-4 border-rose-900">
-        <h3 className="text-sm font-medium text-rose-400 mb-3">Danger Zone</h3>
-        <p className="text-xs text-zinc-500 mb-3">
-          To clear all transactions for {monthLabel}, type <span className="font-mono text-zinc-300">{monthLabel}</span> below.
-        </p>
+        <h3 className="text-sm font-medium mb-3">Operation</h3>
         <div className="flex gap-2">
-          <Input
-            placeholder={monthLabel}
-            value={confirmText}
-            onChange={e => setConfirmText(e.target.value)}
-            className="h-8 text-sm font-mono"
-          />
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button size="sm" variant="destructive" disabled={confirmText !== monthLabel}>Clear all</Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Clear all transactions for {monthLabel}?</AlertDialogTitle>
-                <AlertDialogDescription>This cannot be undone.</AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction className="bg-rose-600 hover:bg-rose-700" onClick={clearAll}>Delete all</AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
+          <Button
+            size="sm"
+            variant={operation === 'export' ? 'default' : 'outline'}
+            onClick={() => setOperation('export')}
+          >
+            Export
+          </Button>
+          <Button
+            size="sm"
+            variant={operation === 'delete' ? 'destructive' : 'outline'}
+            onClick={() => setOperation('delete')}
+            className={operation !== 'delete' ? 'border-rose-900 text-rose-400 hover:bg-rose-950 hover:text-rose-300' : ''}
+          >
+            Delete
+          </Button>
         </div>
       </Card>
+
+      {/* Export panel */}
+      {operation === 'export' && (
+        <Card className="p-4">
+          <h3 className="text-sm font-medium mb-1">Export <span className="font-mono text-zinc-300">{monthLabel}</span></h3>
+          <p className="text-xs text-zinc-500 mb-3">Downloads an Excel file with all transactions and a summary sheet.</p>
+          <Button size="sm" variant="outline" onClick={handleExport}>
+            Download {monthLabel}.xlsx
+          </Button>
+        </Card>
+      )}
+
+      {/* Delete panel */}
+      {operation === 'delete' && (
+        <Card className="p-4 border-rose-900">
+          <h3 className="text-sm font-medium text-rose-400 mb-1">Delete all transactions for <span className="font-mono">{monthLabel}</span></h3>
+          <p className="text-xs text-zinc-500 mb-3">
+            This cannot be undone. Type <span className="font-mono text-zinc-300">{monthLabel}</span> to confirm.
+          </p>
+          <div className="flex gap-2">
+            <Input
+              placeholder={monthLabel}
+              value={confirmText}
+              onChange={e => setConfirmText(e.target.value)}
+              className="h-8 text-sm font-mono"
+            />
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button size="sm" variant="destructive" disabled={confirmText !== monthLabel || deleting}>
+                  {deleting ? 'Deleting…' : 'Delete all'}
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete all transactions for {monthLabel}?</AlertDialogTitle>
+                  <AlertDialogDescription>This cannot be undone. Budgets and recurring rules are not affected.</AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction className="bg-rose-600 hover:bg-rose-700" onClick={handleDelete}>Delete all</AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </div>
+        </Card>
+      )}
     </div>
   );
 }

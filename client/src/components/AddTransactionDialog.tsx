@@ -5,7 +5,9 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { DatePicker } from '@/components/DatePicker';
 import { transactionsApi, categoriesApi } from '@/lib/api';
+import { toYMD } from '@/lib/dates';
 import type { Category } from '@/lib/types';
 
 interface AddTransactionDialogProps {
@@ -19,7 +21,7 @@ export function AddTransactionDialog({ open, onOpenChange, type, monthId }: AddT
   const qc = useQueryClient();
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({
-    date: new Date().toISOString().slice(0, 10),
+    date: toYMD(new Date()),
     description: '',
     amount: '',
     category_id: '',
@@ -33,7 +35,7 @@ export function AddTransactionDialog({ open, onOpenChange, type, monthId }: AddT
 
   const filtered = (categories as Category[]).filter(c => c.type === type && c.is_active);
 
-  const reset = () => setForm({ date: new Date().toISOString().slice(0, 10), description: '', amount: '', category_id: '', bank: 'revolut' });
+  const reset = () => setForm({ date: toYMD(new Date()), description: '', amount: '', category_id: '', bank: 'revolut' });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -70,7 +72,7 @@ export function AddTransactionDialog({ open, onOpenChange, type, monthId }: AddT
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label>Date</Label>
-              <Input type="date" value={form.date} onChange={e => setForm(f => ({ ...f, date: e.target.value }))} required />
+              <DatePicker value={form.date} onChange={v => setForm(f => ({ ...f, date: v }))} />
             </div>
             <div className="space-y-1.5">
               <Label>Amount (€)</Label>

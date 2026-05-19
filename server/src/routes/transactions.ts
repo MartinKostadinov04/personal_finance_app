@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { getDb } from '../db/index';
+import { resolveMonthId } from '../db/months';
 import { Transaction } from '../types';
 
 const router = Router();
@@ -48,11 +49,16 @@ router.post('/', (req: Request, res: Response) => {
 router.put('/:id', (req: Request, res: Response) => {
   const db = getDb();
   const id = parseInt(req.params.id);
-  const { date, amount, description, type, category_id, bank } = req.body as Partial<Transaction>;
+  const { date, amount, description, type, category_id, bank, year: targetYear, month: targetMonth } = req.body as Partial<Transaction> & { year?: number; month?: number };
 
   // Use an explicit presence flag for category_id so we can distinguish
   // "not provided" (keep existing) from "explicitly set to null" (clear it).
   const hasCategoryId = 'category_id' in req.body;
+
+  // Resolve target month_id if year+month provided (atomic INSERT+SELECT)
+  const targetMonthId: number | null = (targetYear != null && targetMonth != null)
+    ? resolveMonthId(db, targetYear, targetMonth)
+    : null;
 
   db.prepare(`
     UPDATE transactions SET
@@ -62,9 +68,10 @@ router.put('/:id', (req: Request, res: Response) => {
       type = COALESCE(?, type),
       category_id = CASE WHEN ? = 1 THEN ? ELSE category_id END,
       bank = COALESCE(?, bank),
+      month_id = COALESCE(?, month_id),
       manually_reviewed = 1
     WHERE id = ?
-  `).run(date ?? null, amount ?? null, description ?? null, type ?? null, hasCategoryId ? 1 : 0, category_id ?? null, bank ?? null, id);
+  `).run(date ?? null, amount ?? null, description ?? null, type ?? null, hasCategoryId ? 1 : 0, category_id ?? null, bank ?? null, targetMonthId, id);
 
   const updated = db.prepare('SELECT * FROM transactions WHERE id = ?').get(id);
   res.json(updated);

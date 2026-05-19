@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
@@ -58,9 +58,35 @@ function ChartCard({ title, children, className = '' }: { title: string; childre
 export function Analytics() {
   const { year, month, setMonth } = useMonth();
 
+  // Period picker state — defaults to last 12 months
+  const _now = new Date();
+  const _todayYear  = _now.getFullYear();
+  const _todayMonth = _now.getMonth() + 1;
+  const _fromMonth  = _todayMonth === 1 ? 12 : _todayMonth - 1;
+  const _fromYear   = _todayMonth === 1 ? _todayYear - 1 : _todayYear - 1;
+  const [periodFrom, setPeriodFrom] = useState({ year: _fromYear, month: _fromMonth });
+  const [periodTo,   setPeriodTo]   = useState({ year: _todayYear, month: _todayMonth });
+
+  const handleFromChange = (y: number, m: number) => {
+    setPeriodFrom({ year: y, month: m });
+    // clamp: if new from > to, pull to up to match
+    if (y > periodTo.year || (y === periodTo.year && m > periodTo.month))
+      setPeriodTo({ year: y, month: m });
+  };
+
+  const handleToChange = (y: number, m: number) => {
+    setPeriodTo({ year: y, month: m });
+    // clamp: if new to < from, push from down to match
+    if (y < periodFrom.year || (y === periodFrom.year && m < periodFrom.month))
+      setPeriodFrom({ year: y, month: m });
+  };
+
   const { data: trend = [] } = useQuery({
-    queryKey: ['analytics', 'trend'],
-    queryFn: analyticsApi.getTrend,
+    queryKey: ['analytics', 'trend', periodFrom.year, periodFrom.month, periodTo.year, periodTo.month],
+    queryFn: () => analyticsApi.getTrend({
+      fromYear: periodFrom.year, fromMonth: periodFrom.month,
+      toYear:   periodTo.year,   toMonth:   periodTo.month,
+    }),
   });
 
   const { data: summary } = useQuery({
@@ -141,8 +167,16 @@ export function Analytics() {
     <div className="space-y-10">
       <PageHeader title="Analytics" />
 
-      {/* ── ALL TIME — sits above the month picker intentionally ────────── */}
-      <Section title="All Time">
+      {/* ── PERIOD ─────────────────────────────────────────────────────── */}
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xs font-semibold uppercase tracking-widest text-zinc-500">Period</h2>
+          <div className="flex items-center gap-2">
+            <MonthYearPicker value={periodFrom} onChange={handleFromChange} />
+            <span className="text-zinc-600 text-xs">→</span>
+            <MonthYearPicker value={periodTo} onChange={handleToChange} />
+          </div>
+        </div>
         <div className="grid grid-cols-2 gap-4">
           <ChartCard title="Total expenses by month">
             {!hasTrend ? (
@@ -185,12 +219,12 @@ export function Analytics() {
             )}
           </ChartCard>
         </div>
-      </Section>
+      </div>
 
       {/* ── THIS MONTH ─────────────────────────────────────────────────── */}
       <div className="space-y-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-xs font-semibold uppercase tracking-widest text-zinc-500">This Month</h2>
+          <h2 className="text-xs font-semibold uppercase tracking-widest text-zinc-500">Monthly</h2>
           <MonthYearPicker value={{ year, month }} onChange={setMonth} />
         </div>
         <div className="grid grid-cols-2 gap-4 mb-4">

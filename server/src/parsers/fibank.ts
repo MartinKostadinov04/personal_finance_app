@@ -1,131 +1,78 @@
-import { load, type CheerioAPI } from 'cheerio';
+import * as xlsx from 'xlsx';
 import { RawTransaction } from '../types';
 
-const SKIP_ROWS = [
-  'натрупани обороти',
-  'старо салдо',
-  'ново салдо',
-  'оборот за периода',
-  'натрупан оборот',
-];
+export function parseFibank(buffer: Buffer): RawTransaction[] {
+  const wb = xlsx.read(buffer, { type: 'buffer' });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = xlsx.utils.sheet_to_json<(string | number)[]>(ws, { header: 1, defval: '' });
 
-export function parseFibank(htmlBuffer: Buffer): RawTransaction[] {
-  const html = htmlBuffer.toString('utf8');
-  const $: CheerioAPI = load(html);
-
-  // Find the table with the expected Cyrillic headers
-  let targetTableEl: ReturnType<CheerioAPI> | null = null;
-
-  $('table').each((_, table) => {
-    const text = $(table).text();
-    if (text.includes('Дата') && (text.includes('Дебит') || text.includes('Кредит'))) {
-      targetTableEl = $(table);
-      return false; // break
-    }
-  });
-
-  if (!targetTableEl) return [];
-
-  const rows = (targetTableEl as ReturnType<CheerioAPI>).find('tr').toArray();
-  if (rows.length < 2) return [];
-
-  // Find header row to determine column indices
+  // Find the header row by looking for "Transaction date:"
   let headerIdx = -1;
-  let colDate = -1;
-  let colDesc = -1;
-  let colDebit = -1;
-  let colCredit = -1;
-
   for (let i = 0; i < rows.length; i++) {
-    // Use children() not find() to avoid recursing into nested tables inside cells
-    const cells = $(rows[i]).children('td, th').toArray().map(c => $(c).text().trim());
-    const dateCol = cells.findIndex(c => c === 'Дата');
-    const descCol = cells.findIndex(c => c === 'Основание');
-    const debitCol = cells.findIndex(c => c === 'Дебит');
-    const creditCol = cells.findIndex(c => c === 'Кредит');
-
-    if (dateCol !== -1 && debitCol !== -1) {
+    if (rows[i].some(c => String(c).toLowerCase().includes('transaction date'))) {
       headerIdx = i;
-      colDate = dateCol;
-      colDesc = descCol;
-      colDebit = debitCol;
-      colCredit = creditCol;
       break;
     }
   }
 
   if (headerIdx === -1) return [];
 
+  const header = rows[headerIdx].map(c => String(c).toLowerCase().trim());
+  const colDate    = header.findIndex(c => c.includes('transaction date'));
+  const colDebit   = header.findIndex(c => c.includes('debit'));
+  const colCredit  = header.findIndex(c => c.includes('credit'));
+  const colBenef   = header.findIndex(c => c.includes('beneficiary'));
+  const colDetails = header.findIndex(c => c.includes('details of payment'));
+  const colMore    = header.findIndex(c => c.includes('more'));
+
   const results: RawTransaction[] = [];
 
   for (let i = headerIdx + 1; i < rows.length; i++) {
-    // Use children() to get only direct <td> cells, not nested table cells
-    const cells = $(rows[i]).children('td').toArray().map(c => $(c).text().trim());
-    if (cells.length === 0) continue;
+    const row = rows[i];
+    if (!row || row.every(c => c === '')) continue;
 
-    // Skip summary rows — check the description column, not the date column
-    // Normalise whitespace so "Натрупани\nобороти" matches "натрупани обороти"
-    const descCell = (colDesc >= 0 ? (cells[colDesc] ?? '') : (cells[1] ?? '')).toLowerCase().replace(/\s+/g, ' ');
-    if (SKIP_ROWS.some(skip => descCell.includes(skip))) continue;
-
-    const rawDate = colDate >= 0 ? cells[colDate] ?? '' : '';
+    const rawDate = String(row[colDate] ?? '').trim();
     if (!rawDate) continue;
 
     const date = parseFibankDate(rawDate);
     if (!date) continue;
 
-    const rawDesc = colDesc >= 0 ? cells[colDesc] ?? '' : '';
-    const debitCell = colDebit >= 0 ? cells[colDebit] ?? '' : '';
-    const creditCell = colCredit >= 0 ? cells[colCredit] ?? '' : '';
+    const debitRaw  = row[colDebit];
+    const creditRaw = row[colCredit];
+    const debit  = typeof debitRaw  === 'number' ? debitRaw  : parseFloat(String(debitRaw).replace(/[^\d.]/g, ''));
+    const credit = typeof creditRaw === 'number' ? creditRaw : parseFloat(String(creditRaw).replace(/[^\d.]/g, ''));
 
-    const debitAmount = extractEurAmount(debitCell);
-    const creditAmount = extractEurAmount(creditCell);
+    const hasDebit  = !isNaN(debit)  && debit  > 0;
+    const hasCredit = !isNaN(credit) && credit > 0;
+    if (!hasDebit && !hasCredit) continue;
 
-    if (debitAmount === null && creditAmount === null) continue;
+    const amount: number = hasDebit ? debit : credit;
+    const type: 'expense' | 'income' = hasDebit ? 'expense' : 'income';
 
-    const amount = debitAmount !== null ? debitAmount : creditAmount!;
-    const txType_raw: 'expense' | 'income' = debitAmount !== null ? 'expense' : 'income';
+    // Build description from beneficiary + details + more
+    const beneficiary = String(row[colBenef]   ?? '').trim();
+    const details     = String(row[colDetails] ?? '').trim();
+    const more        = colMore >= 0 ? String(row[colMore] ?? '').trim() : '';
 
-    // Clean description
-    let description = rawDesc;
-    const descIdx = description.indexOf('Описание:');
-    if (descIdx !== -1) {
-      description = description.slice(descIdx + 'Описание:'.length).trim();
-    }
-    if (description.startsWith('Плащане ПОС ')) {
-      description = description.slice('Плащане ПОС '.length).trim();
-    }
+    // Prefer details, fall back to beneficiary
+    let description = details || beneficiary;
+    // Strip "Плащане ПОС" prefix from the "more" field when it's the only info
+    if (!description && more) description = more.replace(/^Плащане ПОС\s*/i, '').trim();
 
-    results.push({
-      date,
-      amount,
-      description,
-      raw_description: rawDesc,
-      type: txType_raw,
-      bank: 'fibank',
-    });
+    const raw_description = [beneficiary, details, more].filter(Boolean).join(' | ');
+
+    // Transfer detection
+    const descLower = raw_description.toLowerCase();
+    if (descLower.includes('revolut') || descLower.includes('кост')) continue;
+
+    results.push({ date, amount, description, raw_description, type, bank: 'fibank' });
   }
 
   return results;
 }
 
-function extractEurAmount(cell: string): number | null {
-  if (!cell) return null;
-  // Format: "5.14 EUR\n10.05 BGN" — grab the first number before EUR
-  const match = cell.match(/([\d.,]+)\s*EUR/);
-  if (!match) return null;
-  const raw = match[1].trim();
-  // If there's a comma, assume European notation: 1.234,56 → remove . keep ,→.
-  // If no comma, the dot is the decimal separator — parse as-is
-  const normalized = raw.includes(',')
-    ? raw.replace(/\./g, '').replace(',', '.')
-    : raw;
-  const val = parseFloat(normalized);
-  return isNaN(val) || val === 0 ? null : val;
-}
-
 function parseFibankDate(raw: string): string | null {
-  // Format: DD.MM.YYYY
-  const match = raw.match(/^(\d{2})\.(\d{2})\.(\d{4})/);
+  // Format: DD/MM/YYYY
+  const match = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
   return match ? `${match[3]}-${match[2]}-${match[1]}` : null;
 }

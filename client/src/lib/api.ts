@@ -1,4 +1,4 @@
-import type { Category, Month, Transaction, Budget, MonthlySummaryData, ParsedTransaction } from './types';
+import type { Category, Month, Transaction, Budget, StableBudget, MonthlySummaryData, ParsedTransaction } from './types';
 
 async function apiFetch<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -37,7 +37,7 @@ export const transactionsApi = {
   },
   create: (data: Omit<Transaction, 'id' | 'created_at' | 'manually_reviewed' | 'category_display_name' | 'category_color' | 'category_name'>) =>
     apiFetch<Transaction>('/api/transactions', { method: 'POST', body: JSON.stringify(data) }),
-  update: (id: number, data: Partial<Transaction>) =>
+  update: (id: number, data: Partial<Transaction> & { year?: number; month?: number }) =>
     apiFetch<Transaction>(`/api/transactions/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   delete: (id: number) =>
     apiFetch<{ success: boolean }>(`/api/transactions/${id}`, { method: 'DELETE' }),
@@ -55,10 +55,18 @@ export const categoriesApi = {
 
 export const budgetsApi = {
   getAll: (monthId: number) => apiFetch<Budget[]>(`/api/budgets?monthId=${monthId}`),
-  upsert: (data: { month_id: number; category_id: number; planned: number }) =>
+  upsert: (data: { month_id: number; category_id: number; planned: number; is_active?: 0 | 1 | boolean }) =>
     apiFetch<Budget>('/api/budgets', { method: 'PUT', body: JSON.stringify(data) }),
   copyFromPrevious: (month_id: number) =>
     apiFetch<{ copied: number }>('/api/budgets/copy-from-previous', { method: 'POST', body: JSON.stringify({ month_id }) }),
+};
+
+export const stableBudgetsApi = {
+  getAll: () => apiFetch<StableBudget[]>('/api/stable-budgets'),
+  upsert: (data: { category_id: number; planned: number; is_active?: 0 | 1 | boolean }) =>
+    apiFetch<StableBudget>('/api/stable-budgets', { method: 'PUT', body: JSON.stringify(data) }),
+  delete: (categoryId: number) =>
+    apiFetch<{ success: boolean }>(`/api/stable-budgets/${categoryId}`, { method: 'DELETE' }),
 };
 
 export const importApi = {
@@ -73,8 +81,13 @@ export const importApi = {
     }
     return res.json();
   },
+  checkDuplicates: (transactions: ParsedTransaction[], year: number, month: number) =>
+    apiFetch<{ duplicates: boolean[] }>('/api/import/check-duplicates', {
+      method: 'POST',
+      body: JSON.stringify({ transactions, year, month }),
+    }),
   confirm: (transactions: ParsedTransaction[], year: number, month: number) =>
-    apiFetch<{ imported: number }>('/api/import/confirm', {
+    apiFetch<{ imported: number; skipped: number }>('/api/import/confirm', {
       method: 'POST',
       body: JSON.stringify({ transactions, year, month }),
     }),
@@ -109,8 +122,23 @@ export interface TrendPoint {
 
 export interface DailyPoint { date: string; amount: number; }
 
+export interface TrendRange {
+  fromYear?: number;
+  fromMonth?: number;
+  toYear?: number;
+  toMonth?: number;
+}
+
 export const analyticsApi = {
-  getTrend: () => apiFetch<TrendPoint[]>('/api/analytics/trend'),
+  getTrend: (range?: TrendRange) => {
+    const qs = new URLSearchParams();
+    if (range?.fromYear)  qs.set('fromYear',  String(range.fromYear));
+    if (range?.fromMonth) qs.set('fromMonth', String(range.fromMonth));
+    if (range?.toYear)    qs.set('toYear',    String(range.toYear));
+    if (range?.toMonth)   qs.set('toMonth',   String(range.toMonth));
+    const q = qs.toString();
+    return apiFetch<TrendPoint[]>(`/api/analytics/trend${q ? `?${q}` : ''}`);
+  },
   getDaily: (year: number, month: number) =>
     apiFetch<{ current: DailyPoint[]; previous: DailyPoint[] }>(
       `/api/analytics/daily?year=${year}&month=${month}`

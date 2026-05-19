@@ -38,9 +38,21 @@ export interface Transaction {
 
 export interface Budget {
   id: number;
-  month_id: number;
+  month_id: number | null;
   category_id: number;
   planned: number;
+  is_active: number;
+  display_name?: string;
+  category_name?: string;
+  category_type?: 'expense' | 'income';
+  color?: string;
+}
+
+export interface StableBudget {
+  id: number;
+  category_id: number;
+  planned: number;
+  is_active: number;
   display_name?: string;
   category_name?: string;
   category_type?: 'expense' | 'income';
@@ -85,6 +97,19 @@ export interface MerchantRule {
   category_color?: string;
   category_type?: 'expense' | 'income';
   created_at: string;
+}
+
+export interface AllocationFormulaEntry {
+  rowId: string;
+  sign: '+' | '-';
+}
+
+export interface AllocationRowConfig {
+  id: string;
+  label: string;
+  categoryIds: number[];
+  isDifference: boolean;
+  formula: AllocationFormulaEntry[]; // only used when isDifference: true
 }
 
 export interface ParsedTransaction {

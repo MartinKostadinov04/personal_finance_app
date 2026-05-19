@@ -5,6 +5,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { initDb } from './db/index';
+import { computeBalances } from './routes/months';
 import { parseRevolut } from './parsers/revolut';
 import { parseSantander } from './parsers/santander';
 import { parseFibank } from './parsers/fibank';
@@ -49,7 +50,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const income = (db.prepare("SELECT COALESCE(SUM(amount),0) as t FROM transactions WHERE month_id=? AND type='income'").get(m.id) as { t: number }).t;
         const expenses = (db.prepare("SELECT COALESCE(SUM(amount),0) as t FROM transactions WHERE month_id=? AND type='expense'").get(m.id) as { t: number }).t;
         const byCategory = db.prepare("SELECT c.display_name, c.type, COALESCE(SUM(t.amount),0) as total FROM categories c LEFT JOIN transactions t ON t.category_id=c.id AND t.month_id=? WHERE c.is_active=1 GROUP BY c.id ORDER BY c.type, c.sort_order").all(m.id);
-        return { content: [{ type: 'text', text: JSON.stringify({ income, expenses, saved: income - expenses, start_balance: m.start_balance, end_balance: m.end_balance, byCategory }) }] };
+        const bal = computeBalances(db, year, month) ?? { start_balance: 0, end_balance: 0 };
+        return { content: [{ type: 'text', text: JSON.stringify({ income, expenses, saved: income - expenses, start_balance: bal.start_balance, end_balance: bal.end_balance, byCategory }) }] };
       }
 
       case 'get_transactions': {

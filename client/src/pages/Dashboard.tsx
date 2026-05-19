@@ -8,7 +8,7 @@ import { AllocationBreakdown } from '@/components/AllocationBreakdown';
 import { Card, CardContent } from '@/components/ui/card';
 import { monthsApi } from '@/lib/api';
 import { useMonth } from '@/contexts/MonthContext';
-import type { CategoryTotal, AllocationData } from '@/lib/types';
+import type { CategoryTotal } from '@/lib/types';
 
 export function Dashboard() {
   const { year, month, setMonth } = useMonth();
@@ -16,11 +16,6 @@ export function Dashboard() {
   const { data: summary, isLoading } = useQuery({
     queryKey: ['summary', year, month],
     queryFn: () => monthsApi.getSummary(year, month),
-  });
-
-  const { data: allocation } = useQuery({
-    queryKey: ['allocation', year, month],
-    queryFn: () => monthsApi.getAllocation(year, month),
   });
 
   const { data: prevSummary } = useQuery({
@@ -41,8 +36,6 @@ export function Dashboard() {
 
   const totalExpensePlanned = (summary?.budgets ?? []).filter((b: { category_type?: string }) => b.category_type === 'expense').reduce((s: number, b: { planned: number }) => s + b.planned, 0);
   const totalIncomePlanned = (summary?.budgets ?? []).filter((b: { category_type?: string }) => b.category_type === 'income').reduce((s: number, b: { planned: number }) => s + b.planned, 0);
-
-  const emptyAllocation: AllocationData = { living_costs: 0, extra_costs: 0, necessary_allowance: 0, allowance_f: 0, difference: 0 };
 
   return (
     <div>
@@ -79,10 +72,9 @@ export function Dashboard() {
           </div>
 
           <Card className="p-4">
-            <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wider mb-4">Allocation Breakdown</h2>
             <AllocationBreakdown
-              current={allocation?.current ?? emptyAllocation}
-              previous={allocation?.previous ?? emptyAllocation}
+              currentByCategory={summary?.byCategory ?? []}
+              prevByCategory={prevSummary?.byCategory ?? []}
             />
           </Card>
         </>
