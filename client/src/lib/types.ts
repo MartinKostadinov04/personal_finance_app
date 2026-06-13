@@ -31,9 +31,20 @@ export interface Transaction {
   category_display_name?: string;
   category_color?: string;
   category_name?: string;
+  group_id?: number | null;
+  group_name?: string | null;
+  group_color?: string | null;
   bank: 'revolut' | 'santander' | 'fibank' | 'manual';
   manually_reviewed: number;
   created_at: string;
+}
+
+export interface Group {
+  id: number;
+  name: string;
+  color: string;
+  created_at: string;
+  member_count?: number;
 }
 
 export interface Budget {

@@ -172,9 +172,8 @@ export function Analytics() {
         <div className="flex items-center justify-between">
           <h2 className="text-xs font-semibold uppercase tracking-widest text-zinc-500">Period</h2>
           <div className="flex items-center gap-2">
-            <MonthYearPicker value={periodFrom} onChange={handleFromChange} />
-            <span className="text-zinc-600 text-xs">→</span>
-            <MonthYearPicker value={periodTo} onChange={handleToChange} />
+            <MonthYearPicker value={periodFrom} onChange={handleFromChange} label="From" />
+            <MonthYearPicker value={periodTo} onChange={handleToChange} label="To" />
           </div>
         </div>
         <div className="grid grid-cols-2 gap-4">

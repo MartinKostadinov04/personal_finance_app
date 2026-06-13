@@ -6,6 +6,7 @@ import {
   BUDGETS_SCHEMA,
   STABLE_BUDGETS_SCHEMA,
   MERCHANT_RULES_SCHEMA,
+  GROUPS_SCHEMA,
 } from './schema';
 
 export function runMigrations(db: Database.Database): void {
@@ -18,6 +19,12 @@ export function runMigrations(db: Database.Database): void {
   db.exec(BUDGETS_SCHEMA);
   db.exec(STABLE_BUDGETS_SCHEMA);
   db.exec(MERCHANT_RULES_SCHEMA);
+  db.exec(GROUPS_SCHEMA);
+
+  // Add group_id overlay column to transactions (idempotent). ON DELETE SET NULL
+  // auto-ungroups members when a group is deleted (foreign_keys pragma is ON).
+  try { db.exec('ALTER TABLE transactions ADD COLUMN group_id INTEGER REFERENCES groups(id) ON DELETE SET NULL'); } catch { /* already exists */ }
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_transactions_group_id ON transactions(group_id)'); } catch { /* already exists */ }
 
   // Add match_amount column to existing merchant_rules tables (idempotent)
   try { db.exec('ALTER TABLE merchant_rules ADD COLUMN match_amount REAL'); } catch { /* already exists */ }

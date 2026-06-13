@@ -1,4 +1,4 @@
-import type { Category, Month, Transaction, Budget, StableBudget, MonthlySummaryData, ParsedTransaction } from './types';
+import type { Category, Month, Transaction, Budget, StableBudget, MonthlySummaryData, ParsedTransaction, Group } from './types';
 
 async function apiFetch<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -26,13 +26,14 @@ export const monthsApi = {
 };
 
 export const transactionsApi = {
-  getAll: (params: { monthId?: number; type?: string; categoryId?: number; bank?: string; search?: string }) => {
+  getAll: (params: { monthId?: number; type?: string; categoryId?: number; bank?: string; search?: string; grouped?: boolean }) => {
     const qs = new URLSearchParams();
     if (params.monthId) qs.set('monthId', String(params.monthId));
     if (params.type) qs.set('type', params.type);
     if (params.categoryId) qs.set('categoryId', String(params.categoryId));
     if (params.bank) qs.set('bank', params.bank);
     if (params.search) qs.set('search', params.search);
+    if (params.grouped) qs.set('grouped', '1');
     return apiFetch<Transaction[]>(`/api/transactions?${qs.toString()}`);
   },
   create: (data: Omit<Transaction, 'id' | 'created_at' | 'manually_reviewed' | 'category_display_name' | 'category_color' | 'category_name'>) =>
@@ -140,6 +141,22 @@ export const merchantRulesApi = {
     apiFetch<{ success: boolean }>(`/api/merchant-rules/${id}`, { method: 'DELETE' }),
   bulkCategorize: (data: { pattern: string; category_id: number; scope: string; year: number; month: number; match_amount?: number | null; match_type?: 'contains' | 'regex' }) =>
     apiFetch<{ updated: number }>('/api/transactions/bulk-categorize', { method: 'POST', body: JSON.stringify(data) }),
+};
+
+export const groupsApi = {
+  getAll: () => apiFetch<Group[]>('/api/groups'),
+  create: (data: {
+    name: string;
+    color?: string;
+    memberIds?: number[];
+    range?: { fromYear: number; fromMonth: number; toYear: number; toMonth: number };
+  }) => apiFetch<Group>('/api/groups', { method: 'POST', body: JSON.stringify(data) }),
+  update: (id: number, data: { name?: string; color?: string }) =>
+    apiFetch<Group>(`/api/groups/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  delete: (id: number) =>
+    apiFetch<{ success: boolean }>(`/api/groups/${id}`, { method: 'DELETE' }),
+  setMembers: (id: number, data: { add?: number[]; remove?: number[] }) =>
+    apiFetch<{ success: boolean }>(`/api/groups/${id}/members`, { method: 'POST', body: JSON.stringify(data) }),
 };
 
 export interface TrendPoint {

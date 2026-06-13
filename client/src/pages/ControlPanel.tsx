@@ -198,9 +198,35 @@ function DeleteCategoryButton({ category, onDeleted }: { category: Category; onD
 
 /* ─── Budgets Tab ─── */
 
+type BudgetScope = 'off' | 'stable' | 'monthly';
+type BudgetPrefs = { scope: BudgetScope; expensesOn: boolean; incomeOn: boolean };
+const BUDGET_PREFS_KEY = 'budgets:prefs';
+
+function loadBudgetPrefs(): BudgetPrefs {
+  try {
+    const raw = localStorage.getItem(BUDGET_PREFS_KEY);
+    if (raw) {
+      const p = JSON.parse(raw) as Partial<BudgetPrefs>;
+      return {
+        scope: p.scope === 'off' || p.scope === 'stable' || p.scope === 'monthly' ? p.scope : 'monthly',
+        expensesOn: p.expensesOn !== false,
+        incomeOn: p.incomeOn !== false,
+      };
+    }
+  } catch {}
+  return { scope: 'monthly', expensesOn: true, incomeOn: true };
+}
+
 function BudgetsTab({ year, month, onMonthChange }: { year: number; month: number; onMonthChange: (y: number, m: number) => void }) {
   const qc = useQueryClient();
-  const [scope, setScope] = useState<'stable' | 'monthly'>('monthly');
+  const [prefs, setPrefs] = useState<BudgetPrefs>(loadBudgetPrefs);
+  const { scope, expensesOn, incomeOn } = prefs;
+
+  useEffect(() => {
+    localStorage.setItem(BUDGET_PREFS_KEY, JSON.stringify(prefs));
+  }, [prefs]);
+
+  const setScope = (s: BudgetScope) => setPrefs(p => ({ ...p, scope: s }));
 
   const { data: monthRecord } = useQuery({
     queryKey: ['month', year, month],
@@ -217,6 +243,7 @@ function BudgetsTab({ year, month, onMonthChange }: { year: number; month: numbe
   const { data: stableBudgets = [] } = useQuery({
     queryKey: ['stable-budgets'],
     queryFn: stableBudgetsApi.getAll,
+    enabled: scope !== 'off',
   });
 
   const allCats = (categories as Category[]).filter(c => c.is_active);
@@ -272,6 +299,12 @@ function BudgetsTab({ year, month, onMonthChange }: { year: number; month: numbe
           >
             Monthly
           </button>
+          <button
+            onClick={() => setScope('off')}
+            className={cn('px-3 py-1 rounded transition-colors', scope === 'off' ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-400 hover:text-zinc-200')}
+          >
+            Off
+          </button>
         </div>
         {scope === 'monthly' && (
           <div className="flex items-center gap-2">
@@ -281,36 +314,65 @@ function BudgetsTab({ year, month, onMonthChange }: { year: number; month: numbe
         )}
       </div>
 
-      <div className="grid grid-cols-2 gap-6">
-        <BudgetTable title="Expenses" categories={expenseCats} getRow={getRow} onSave={save} />
-        <BudgetTable title="Income" categories={incomeCats} getRow={getRow} onSave={save} />
-      </div>
+      {scope === 'off' ? (
+        <Card className="p-8 text-center text-sm text-zinc-500">
+          Budgeting is off. Switch to Stable or Monthly to start planning.
+        </Card>
+      ) : (
+        <div className="grid grid-cols-2 gap-6">
+          <BudgetTable
+            title="Expenses"
+            categories={expenseCats}
+            getRow={getRow}
+            onSave={save}
+            enabled={expensesOn}
+            onToggle={v => setPrefs(p => ({ ...p, expensesOn: v }))}
+          />
+          <BudgetTable
+            title="Income"
+            categories={incomeCats}
+            getRow={getRow}
+            onSave={save}
+            enabled={incomeOn}
+            onToggle={v => setPrefs(p => ({ ...p, incomeOn: v }))}
+          />
+        </div>
+      )}
     </div>
   );
 }
 
-function BudgetTable({ title, categories, getRow, onSave }: {
+function BudgetTable({ title, categories, getRow, onSave, enabled, onToggle }: {
   title: string;
   categories: Category[];
   getRow: (catId: number) => { planned: number; is_active: boolean };
   onSave: (catId: number, planned: number, is_active: boolean) => void | Promise<void>;
+  enabled: boolean;
+  onToggle: (v: boolean) => void;
 }) {
   return (
-    <Card className="p-4">
+    <Card className={cn('p-4', !enabled && 'opacity-60')}>
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-sm font-medium uppercase tracking-wider text-zinc-400">{title}</h3>
+        <Switch checked={enabled} onCheckedChange={onToggle} />
       </div>
-      <div className="text-xs text-zinc-500 grid grid-cols-[1fr_100px_44px] gap-3 pb-2 border-b border-zinc-800 mb-1 uppercase tracking-wider">
-        <span>Category</span>
-        <span className="text-right">Planned</span>
-        <span className="text-right">Active</span>
-      </div>
-      <div className="space-y-1">
-        {categories.map(cat => {
-          const row = getRow(cat.id);
-          return <BudgetRow key={cat.id} category={cat} planned={row.planned} isActive={row.is_active} onSave={onSave} />;
-        })}
-      </div>
+      {enabled ? (
+        <>
+          <div className="text-xs text-zinc-500 grid grid-cols-[1fr_100px_44px] gap-3 pb-2 border-b border-zinc-800 mb-1 uppercase tracking-wider">
+            <span>Category</span>
+            <span className="text-right">Planned</span>
+            <span className="text-right">Active</span>
+          </div>
+          <div className="space-y-1">
+            {categories.map(cat => {
+              const row = getRow(cat.id);
+              return <BudgetRow key={cat.id} category={cat} planned={row.planned} isActive={row.is_active} onSave={onSave} />;
+            })}
+          </div>
+        </>
+      ) : (
+        <div className="text-xs text-zinc-500 py-6 text-center">{title} budgeting is off.</div>
+      )}
     </Card>
   );
 }
@@ -1008,10 +1070,9 @@ function ExportPanel() {
 
       {/* Period */}
       <Field label="Period">
-        <div className="flex items-center gap-2">
-          <MonthYearPicker value={{ year: fromYear, month: fromMonth }} onChange={setFrom} />
-          <span className="text-zinc-500">→</span>
-          <MonthYearPicker value={{ year: toYear, month: toMonth }} onChange={setTo} />
+        <div className="flex items-center gap-3">
+          <MonthYearPicker value={{ year: fromYear, month: fromMonth }} onChange={setFrom} label="From" />
+          <MonthYearPicker value={{ year: toYear, month: toMonth }} onChange={setTo} label="To" />
         </div>
       </Field>
 

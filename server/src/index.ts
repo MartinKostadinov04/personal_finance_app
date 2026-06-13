@@ -23,6 +23,7 @@ import importRouter from './routes/import';
 import exportRouter from './routes/export';
 import analyticsRouter from './routes/analytics';
 import merchantRulesRouter from './routes/merchant-rules';
+import groupsRouter from './routes/groups';
 
 const app = express();
 
@@ -39,6 +40,7 @@ app.use('/api/import', importRouter);
 app.use('/api/export', exportRouter);
 app.use('/api/analytics', analyticsRouter);
 app.use('/api/merchant-rules', merchantRulesRouter);
+app.use('/api/groups', groupsRouter);
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 

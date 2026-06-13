@@ -7,24 +7,13 @@ import { useState } from 'react';
 interface MonthYearPickerProps {
   value: { year: number; month: number };
   onChange: (year: number, month: number) => void;
+  label?: string;
 }
 
-export function MonthYearPicker({ value, onChange }: MonthYearPickerProps) {
+export function MonthYearPicker({ value, onChange, label }: MonthYearPickerProps) {
   const [open, setOpen] = useState(false);
   const [pickerYear, setPickerYear] = useState(value.year);
   const monthShort = getMonthNames();
-
-  const prev = () => {
-    const m = value.month === 1 ? 12 : value.month - 1;
-    const y = value.month === 1 ? value.year - 1 : value.year;
-    onChange(y, m);
-  };
-
-  const next = () => {
-    const m = value.month === 12 ? 1 : value.month + 1;
-    const y = value.month === 12 ? value.year + 1 : value.year;
-    onChange(y, m);
-  };
 
   const selectMonth = (m: number) => {
     onChange(pickerYear, m);
@@ -32,14 +21,11 @@ export function MonthYearPicker({ value, onChange }: MonthYearPickerProps) {
   };
 
   return (
-    <div className="flex items-center gap-1">
-      <Button variant="ghost" size="icon" onClick={prev} className="h-7 w-7">
-        <ChevronLeft className="h-4 w-4" />
-      </Button>
-
-      <Popover open={open} onOpenChange={setOpen}>
+    <div className="flex flex-col gap-0.5">
+      {label && <span className="text-xs text-zinc-500 uppercase tracking-wider">{label}</span>}
+      <Popover open={open} onOpenChange={v => { if (v) setPickerYear(value.year); setOpen(v); }}>
         <PopoverTrigger asChild>
-          <Button variant="ghost" className="h-7 px-3 text-sm font-medium min-w-[120px]">
+          <Button variant="outline" className="h-8 px-3 text-sm font-medium min-w-[130px] justify-center">
             {formatMonthYear(value.year, value.month)}
           </Button>
         </PopoverTrigger>
@@ -72,10 +58,6 @@ export function MonthYearPicker({ value, onChange }: MonthYearPickerProps) {
           </div>
         </PopoverContent>
       </Popover>
-
-      <Button variant="ghost" size="icon" onClick={next} className="h-7 w-7">
-        <ChevronRight className="h-4 w-4" />
-      </Button>
     </div>
   );
 }

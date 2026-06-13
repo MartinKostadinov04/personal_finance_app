@@ -15,9 +15,9 @@ export function CategoryBadge({ category }: CategoryBadgeProps) {
         color: hex,
         backgroundColor: hex + '33',
       }}
-      className="text-xs font-medium whitespace-nowrap"
+      className="text-xs font-medium max-w-full min-w-0"
     >
-      {category.display_name}
+      <span className="truncate">{category.display_name}</span>
     </Badge>
   );
 }

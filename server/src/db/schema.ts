@@ -73,3 +73,14 @@ CREATE TABLE IF NOT EXISTS merchant_rules (
   bank TEXT,
   created_at TEXT DEFAULT (datetime('now'))
 )`;
+
+// One-time "pockets" that bundle transactions (e.g. a vacation). A transaction's
+// membership is an overlay via transactions.group_id — its real category_id is
+// preserved, so ungrouping (or deleting the group) restores the original category.
+export const GROUPS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS groups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  color TEXT DEFAULT '#71717a',
+  created_at TEXT DEFAULT (datetime('now'))
+)`;

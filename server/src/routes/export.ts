@@ -1,4 +1,7 @@
 import { Router, Request, Response } from 'express';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
 import { getDb } from '../db/index';
@@ -84,15 +87,25 @@ function getMonthSummary(db: ReturnType<typeof getDb>, m: MonthRow): MonthSummar
     "SELECT COALESCE(SUM(amount),0) as total FROM transactions WHERE month_id=? AND type='expense'"
   ).get(m.id) as { total: number }).total;
 
+  // Mirror of months.ts summary: ungrouped txns under their category (Part A),
+  // grouped txns under a synthetic `group:{name}` label per type (Part B).
   const byCategory = db.prepare(`
     SELECT c.id as category_id, c.name as category_name, c.display_name, c.type, c.color,
            COALESCE(SUM(t.amount), 0) as total
     FROM categories c
-    LEFT JOIN transactions t ON t.category_id = c.id AND t.month_id = ?
+    LEFT JOIN transactions t ON t.category_id = c.id AND t.month_id = ? AND t.group_id IS NULL
     WHERE c.is_active = 1
     GROUP BY c.id
-    ORDER BY c.type, c.sort_order
-  `).all(m.id) as CategoryTotalRow[];
+    UNION ALL
+    SELECT CASE WHEN t.type = 'income' THEN -(g.id + 1000000) ELSE -g.id END as category_id,
+           'group:' || g.name as category_name,
+           'group:' || g.name as display_name,
+           t.type as type, g.color as color, COALESCE(SUM(t.amount), 0) as total
+    FROM groups g
+    JOIN transactions t ON t.group_id = g.id AND t.month_id = ?
+    GROUP BY g.id, t.type
+    ORDER BY type, category_name
+  `).all(m.id, m.id) as CategoryTotalRow[];
 
   const budgets = db.prepare(`
     SELECT b.category_id, b.planned, b.is_active,
@@ -128,8 +141,91 @@ function filterCategories(rows: CategoryTotalRow[], t: TypeFilter): CategoryTota
   return rows.filter(r => r.type === t);
 }
 
+interface AnalyticsData {
+  summaries: MonthSummary[];
+  totals: { income: number; expenses: number; saved: number };
+  averages: { income: number; expenses: number; saved: number };
+  extremes: {
+    highestExpense: { label: string; value: number } | null;
+    lowestExpense: { label: string; value: number } | null;
+    highestIncome: { label: string; value: number } | null;
+    bestSaved: { label: string; value: number } | null;
+    worstSaved: { label: string; value: number } | null;
+  };
+  topCategories: Array<{ display_name: string; type: 'expense' | 'income'; total: number }>;
+}
+
+function computeAnalyticsData(db: ReturnType<typeof getDb>, months: MonthRow[], typeFilter: TypeFilter): AnalyticsData {
+  const summaries = months.map(m => getMonthSummary(db, m));
+  const totals = summaries.reduce(
+    (acc, s) => ({ income: acc.income + s.income, expenses: acc.expenses + s.expenses, saved: acc.saved + s.saved }),
+    { income: 0, expenses: 0, saved: 0 },
+  );
+  const n = Math.max(summaries.length, 1);
+  const averages = { income: totals.income / n, expenses: totals.expenses / n, saved: totals.saved / n };
+
+  const pick = (key: 'income' | 'expenses' | 'saved', mode: 'max' | 'min') => {
+    if (summaries.length === 0) return null;
+    const best = summaries.reduce((a, b) => (mode === 'max' ? (b[key] > a[key] ? b : a) : (b[key] < a[key] ? b : a)));
+    return { label: best.label, value: best[key] };
+  };
+
+  const extremes = {
+    highestExpense: pick('expenses', 'max'),
+    lowestExpense:  pick('expenses', 'min'),
+    highestIncome:  pick('income',   'max'),
+    bestSaved:      pick('saved',    'max'),
+    worstSaved:     pick('saved',    'min'),
+  };
+
+  // Aggregate categories over the period (respecting type filter)
+  const catMap = new Map<number, { display_name: string; type: 'expense' | 'income'; total: number }>();
+  for (const s of summaries) {
+    for (const c of s.byCategory) {
+      if (typeFilter !== 'all' && c.type !== typeFilter) continue;
+      const existing = catMap.get(c.category_id);
+      if (existing) existing.total += c.total;
+      else catMap.set(c.category_id, { display_name: c.display_name, type: c.type, total: c.total });
+    }
+  }
+  const topCategories = [...catMap.values()].filter(c => c.total > 0).sort((a, b) => b.total - a.total);
+
+  return { summaries, totals, averages, extremes, topCategories };
+}
+
 function fmtAmount(n: number): string {
   return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/* ─── Unicode-capable fonts (needed for Cyrillic etc.) ─── */
+interface PdfFonts { regular: string; bold: string; }
+let cachedFonts: PdfFonts | null | undefined;
+
+function findPdfFonts(): PdfFonts | null {
+  if (cachedFonts !== undefined) return cachedFonts;
+  const bundled = path.resolve(__dirname, '../../assets/fonts');
+  const candidates: PdfFonts[] = [
+    { regular: path.join(bundled, 'NotoSans-Regular.ttf'),  bold: path.join(bundled, 'NotoSans-Bold.ttf') },
+    { regular: path.join(bundled, 'DejaVuSans.ttf'),        bold: path.join(bundled, 'DejaVuSans-Bold.ttf') },
+  ];
+  const plat = os.platform();
+  if (plat === 'win32') {
+    candidates.push({ regular: 'C:\\Windows\\Fonts\\arial.ttf', bold: 'C:\\Windows\\Fonts\\arialbd.ttf' });
+  } else if (plat === 'darwin') {
+    candidates.push({ regular: '/Library/Fonts/Arial Unicode.ttf', bold: '/Library/Fonts/Arial Unicode.ttf' });
+    candidates.push({ regular: '/System/Library/Fonts/Supplemental/Arial.ttf', bold: '/System/Library/Fonts/Supplemental/Arial Bold.ttf' });
+  } else {
+    candidates.push({ regular: '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', bold: '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf' });
+    candidates.push({ regular: '/usr/share/fonts/TTF/DejaVuSans.ttf', bold: '/usr/share/fonts/TTF/DejaVuSans-Bold.ttf' });
+  }
+  for (const c of candidates) {
+    if (fs.existsSync(c.regular) && fs.existsSync(c.bold)) {
+      cachedFonts = c;
+      return c;
+    }
+  }
+  cachedFonts = null;
+  return null;
 }
 
 /* ─── Excel builder ─── */
@@ -221,27 +317,83 @@ async function buildExcel(opts: ExportOptions, months: MonthRow[]): Promise<Buff
 
   if (opts.sections.includes('analytics')) {
     const sheet = wb.addWorksheet('Analytics');
-    const cols: Array<{ header: string; key: string; width: number }> = [
-      { header: 'Month', key: 'label', width: 16 },
-    ];
-    if (opts.typeFilter !== 'expense') cols.push({ header: 'Income', key: 'income', width: 14 });
-    if (opts.typeFilter !== 'income')  cols.push({ header: 'Expenses', key: 'expenses', width: 14 });
-    cols.push({ header: 'Saved', key: 'saved', width: 14 });
-    sheet.columns = cols;
-    for (const m of months) {
-      const s = getMonthSummary(db, m);
-      const row: Record<string, unknown> = { label: s.label, saved: s.saved };
-      if (opts.typeFilter !== 'expense') row.income = s.income;
-      if (opts.typeFilter !== 'income')  row.expenses = s.expenses;
-      sheet.addRow(row);
+    const a = computeAnalyticsData(db, months, opts.typeFilter);
+    sheet.columns = [
+      { width: 28 }, { width: 16 }, { width: 16 }, { width: 16 }, { width: 16 },
+    ] as Partial<ExcelJS.Column>[];
+
+    const showIncome = opts.typeFilter !== 'expense';
+    const showExpenses = opts.typeFilter !== 'income';
+    let row = 1;
+
+    // Overview
+    sheet.getCell(row, 1).value = 'Overview';
+    sheet.getCell(row, 1).font = { bold: true, size: 14 };
+    row += 2;
+
+    const overviewRows: Array<[string, number | string]> = [['Months covered', a.summaries.length]];
+    if (showIncome)   overviewRows.push(['Total income', a.totals.income]);
+    if (showExpenses) overviewRows.push(['Total expenses', a.totals.expenses]);
+    overviewRows.push(['Net saved', a.totals.saved]);
+    if (showIncome)   overviewRows.push(['Avg income / month', a.averages.income]);
+    if (showExpenses) overviewRows.push(['Avg expenses / month', a.averages.expenses]);
+    overviewRows.push(['Avg saved / month', a.averages.saved]);
+    if (a.extremes.highestIncome && showIncome) overviewRows.push([`Highest income month (${a.extremes.highestIncome.label})`, a.extremes.highestIncome.value]);
+    if (a.extremes.highestExpense && showExpenses) overviewRows.push([`Highest expenses month (${a.extremes.highestExpense.label})`, a.extremes.highestExpense.value]);
+    if (a.extremes.lowestExpense && showExpenses)  overviewRows.push([`Lowest expenses month (${a.extremes.lowestExpense.label})`,  a.extremes.lowestExpense.value]);
+    if (a.extremes.bestSaved)  overviewRows.push([`Best savings month (${a.extremes.bestSaved.label})`,   a.extremes.bestSaved.value]);
+    if (a.extremes.worstSaved) overviewRows.push([`Worst savings month (${a.extremes.worstSaved.label})`, a.extremes.worstSaved.value]);
+    for (const [label, val] of overviewRows) {
+      sheet.getCell(row, 1).value = label;
+      sheet.getCell(row, 2).value = val;
+      if (typeof val === 'number' && label !== 'Months covered') sheet.getCell(row, 2).numFmt = '#,##0.00';
+      row += 1;
     }
-    sheet.getRow(1).font = headerStyle as ExcelJS.Row['font'];
-    sheet.eachRow((r, idx) => {
-      if (idx === 1) return;
-      r.eachCell((cell, colNum) => {
-        if (colNum > 1) cell.numFmt = '#,##0.00';
-      });
+    row += 2;
+
+    // Monthly trend
+    sheet.getCell(row, 1).value = 'Monthly trend';
+    sheet.getCell(row, 1).font = { bold: true, size: 12 };
+    row += 1;
+    const trendHeaders = ['Month'];
+    if (showIncome)   trendHeaders.push('Income');
+    if (showExpenses) trendHeaders.push('Expenses');
+    trendHeaders.push('Saved');
+    trendHeaders.forEach((h, i) => {
+      sheet.getCell(row, i + 1).value = h;
+      sheet.getCell(row, i + 1).font = { bold: true };
     });
+    row += 1;
+    for (const s of a.summaries) {
+      let col = 1;
+      sheet.getCell(row, col++).value = s.label;
+      if (showIncome)   { sheet.getCell(row, col).value = s.income;   sheet.getCell(row, col).numFmt = '#,##0.00'; col++; }
+      if (showExpenses) { sheet.getCell(row, col).value = s.expenses; sheet.getCell(row, col).numFmt = '#,##0.00'; col++; }
+      sheet.getCell(row, col).value = s.saved; sheet.getCell(row, col).numFmt = '#,##0.00';
+      row += 1;
+    }
+    row += 2;
+
+    // Top categories (aggregated)
+    if (a.topCategories.length > 0) {
+      sheet.getCell(row, 1).value = 'Top categories (across period)';
+      sheet.getCell(row, 1).font = { bold: true, size: 12 };
+      row += 1;
+      const catHeaders = ['Category', 'Type', 'Total', 'Avg / month'];
+      catHeaders.forEach((h, i) => {
+        sheet.getCell(row, i + 1).value = h;
+        sheet.getCell(row, i + 1).font = { bold: true };
+      });
+      row += 1;
+      for (const c of a.topCategories) {
+        sheet.getCell(row, 1).value = c.display_name;
+        sheet.getCell(row, 2).value = c.type;
+        sheet.getCell(row, 3).value = c.total;       sheet.getCell(row, 3).numFmt = '#,##0.00';
+        sheet.getCell(row, 4).value = c.total / Math.max(a.summaries.length, 1);
+        sheet.getCell(row, 4).numFmt = '#,##0.00';
+        row += 1;
+      }
+    }
   }
 
   return Buffer.from(await wb.xlsx.writeBuffer());
@@ -260,16 +412,26 @@ function buildPdf(opts: ExportOptions, months: MonthRow[]): Promise<Buffer> {
 
     const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
 
+    const fonts = findPdfFonts();
+    const FONT_REGULAR = 'Body';
+    const FONT_BOLD = 'Body-Bold';
+    if (fonts) {
+      doc.registerFont(FONT_REGULAR, fonts.regular);
+      doc.registerFont(FONT_BOLD, fonts.bold);
+    }
+    const fontRegular = fonts ? FONT_REGULAR : 'Helvetica';
+    const fontBold = fonts ? FONT_BOLD : 'Helvetica-Bold';
+
     const drawTitle = (txt: string, size = 18) => {
-      doc.font('Helvetica-Bold').fontSize(size).fillColor('#111').text(txt);
+      doc.font(fontBold).fontSize(size).fillColor('#111').text(txt);
       doc.moveDown(0.4);
     };
     const drawSubtitle = (txt: string) => {
-      doc.font('Helvetica-Bold').fontSize(13).fillColor('#222').text(txt);
+      doc.font(fontBold).fontSize(13).fillColor('#222').text(txt);
       doc.moveDown(0.3);
     };
     const drawMeta = (txt: string) => {
-      doc.font('Helvetica').fontSize(9).fillColor('#666').text(txt);
+      doc.font(fontRegular).fontSize(9).fillColor('#666').text(txt);
       doc.moveDown(0.6);
     };
 
@@ -288,7 +450,7 @@ function buildPdf(opts: ExportOptions, months: MonthRow[]): Promise<Buffer> {
         if (fill) {
           doc.rect(startX, y, pageWidth, h).fill(fill);
         }
-        doc.fillColor('#111').font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(9);
+        doc.fillColor('#111').font(bold ? fontBold : fontRegular).fontSize(9);
         let x = startX;
         for (let i = 0; i < cells.length; i++) {
           const w = widths[i];
@@ -330,7 +492,7 @@ function buildPdf(opts: ExportOptions, months: MonthRow[]): Promise<Buffer> {
         ]);
         drawTable(['Date', 'Description', 'Category', 'Bank', 'Amount'], rows, widths, ['left', 'left', 'left', 'left', 'right']);
         const total = txs.reduce((s, t) => s + (t.type === 'expense' ? -t.amount : t.amount), 0);
-        doc.font('Helvetica-Bold').fontSize(10).fillColor('#111')
+        doc.font(fontBold).fontSize(10).fillColor('#111')
            .text(`${txs.length} transactions    Total: ${fmtAmount(total)}`, { align: 'right' });
         doc.moveDown(0.8);
       }
@@ -342,7 +504,7 @@ function buildPdf(opts: ExportOptions, months: MonthRow[]): Promise<Buffer> {
       drawSubtitle('Dashboard');
       for (const m of months) {
         const s = getMonthSummary(db, m);
-        doc.font('Helvetica-Bold').fontSize(11).fillColor('#111').text(s.label);
+        doc.font(fontBold).fontSize(11).fillColor('#111').text(s.label);
         doc.moveDown(0.3);
 
         const summaryRows: string[][] = [];
@@ -371,24 +533,67 @@ function buildPdf(opts: ExportOptions, months: MonthRow[]): Promise<Buffer> {
     if (opts.sections.includes('analytics')) {
       if (doc.y > doc.page.height - doc.page.margins.bottom - 100) doc.addPage();
       drawSubtitle('Analytics');
-      const headers = ['Month'];
-      if (opts.typeFilter !== 'expense') headers.push('Income');
-      if (opts.typeFilter !== 'income')  headers.push('Expenses');
-      headers.push('Saved');
-      const colCount = headers.length;
-      const baseWidth = pageWidth / colCount;
-      const widths = new Array(colCount).fill(baseWidth);
-      const align: ('left' | 'right')[] = headers.map((_, i) => i === 0 ? 'left' : 'right');
+      const a = computeAnalyticsData(db, months, opts.typeFilter);
+      const showIncome   = opts.typeFilter !== 'expense';
+      const showExpenses = opts.typeFilter !== 'income';
 
-      const rows = months.map(m => {
-        const s = getMonthSummary(db, m);
-        const row: string[] = [s.label];
-        if (opts.typeFilter !== 'expense') row.push(fmtAmount(s.income));
-        if (opts.typeFilter !== 'income')  row.push(fmtAmount(s.expenses));
-        row.push(fmtAmount(s.saved));
-        return row;
+      // Overview
+      doc.font(fontBold).fontSize(11).fillColor('#111').text('Overview');
+      doc.moveDown(0.3);
+      const overviewRows: string[][] = [['Months covered', String(a.summaries.length)]];
+      if (showIncome)   overviewRows.push(['Total income', fmtAmount(a.totals.income)]);
+      if (showExpenses) overviewRows.push(['Total expenses', fmtAmount(a.totals.expenses)]);
+      overviewRows.push(['Net saved', fmtAmount(a.totals.saved)]);
+      if (showIncome)   overviewRows.push(['Avg income / month', fmtAmount(a.averages.income)]);
+      if (showExpenses) overviewRows.push(['Avg expenses / month', fmtAmount(a.averages.expenses)]);
+      overviewRows.push(['Avg saved / month', fmtAmount(a.averages.saved)]);
+      if (a.extremes.highestIncome && showIncome)
+        overviewRows.push([`Highest income (${a.extremes.highestIncome.label})`, fmtAmount(a.extremes.highestIncome.value)]);
+      if (a.extremes.highestExpense && showExpenses)
+        overviewRows.push([`Highest expenses (${a.extremes.highestExpense.label})`, fmtAmount(a.extremes.highestExpense.value)]);
+      if (a.extremes.lowestExpense && showExpenses)
+        overviewRows.push([`Lowest expenses (${a.extremes.lowestExpense.label})`, fmtAmount(a.extremes.lowestExpense.value)]);
+      if (a.extremes.bestSaved)
+        overviewRows.push([`Best savings month (${a.extremes.bestSaved.label})`, fmtAmount(a.extremes.bestSaved.value)]);
+      if (a.extremes.worstSaved)
+        overviewRows.push([`Worst savings month (${a.extremes.worstSaved.label})`, fmtAmount(a.extremes.worstSaved.value)]);
+      drawTable(['Metric', 'Value'], overviewRows, [300, pageWidth - 300], ['left', 'right']);
+
+      // Monthly trend table
+      if (doc.y > doc.page.height - doc.page.margins.bottom - 100) doc.addPage();
+      doc.font(fontBold).fontSize(11).fillColor('#111').text('Monthly trend');
+      doc.moveDown(0.3);
+      const trendHeaders = ['Month'];
+      if (showIncome)   trendHeaders.push('Income');
+      if (showExpenses) trendHeaders.push('Expenses');
+      trendHeaders.push('Saved');
+      const trendBase = pageWidth / trendHeaders.length;
+      const trendWidths = new Array(trendHeaders.length).fill(trendBase);
+      const trendAlign: ('left' | 'right')[] = trendHeaders.map((_, i) => i === 0 ? 'left' : 'right');
+      const trendRows = a.summaries.map(s => {
+        const r: string[] = [s.label];
+        if (showIncome)   r.push(fmtAmount(s.income));
+        if (showExpenses) r.push(fmtAmount(s.expenses));
+        r.push(fmtAmount(s.saved));
+        return r;
       });
-      drawTable(headers, rows, widths, align);
+      drawTable(trendHeaders, trendRows, trendWidths, trendAlign);
+
+      // Top categories
+      if (a.topCategories.length > 0) {
+        if (doc.y > doc.page.height - doc.page.margins.bottom - 100) doc.addPage();
+        doc.font(fontBold).fontSize(11).fillColor('#111').text('Top categories (across period)');
+        doc.moveDown(0.3);
+        const monthCount = Math.max(a.summaries.length, 1);
+        const catWidths = [pageWidth - 80 - 110 - 110, 80, 110, 110];
+        const catRows = a.topCategories.map(c => [
+          c.display_name,
+          c.type,
+          fmtAmount(c.total),
+          fmtAmount(c.total / monthCount),
+        ]);
+        drawTable(['Category', 'Type', 'Total', 'Avg / month'], catRows, catWidths, ['left', 'left', 'right', 'right']);
+      }
     }
 
     doc.end();

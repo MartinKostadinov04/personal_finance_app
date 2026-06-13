@@ -1,5 +1,6 @@
+import { useState } from 'react';
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom';
-import { LayoutDashboard, ArrowLeftRight, BarChart2, Settings2 } from 'lucide-react';
+import { LayoutDashboard, ArrowLeftRight, BarChart2, Settings2, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { Dashboard } from '@/pages/Dashboard';
 import { Transactions } from '@/pages/Transactions';
 import { Analytics } from '@/pages/Analytics';
@@ -25,39 +26,64 @@ const NAV_GROUPS = [
 
 const CONTROL_PANEL = { to: '/control-panel', icon: Settings2, label: 'Control Panel' };
 
-function NavItem({ to, icon: Icon, label, end }: { to: string; icon: React.ElementType; label: string; end?: boolean }) {
+function NavItem({ to, icon: Icon, label, end, collapsed }: { to: string; icon: React.ElementType; label: string; end?: boolean; collapsed?: boolean }) {
   return (
     <NavLink
       to={to}
       end={end}
+      title={collapsed ? label : undefined}
       className={({ isActive }) =>
         cn('flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors',
+          collapsed && 'justify-center px-0',
           isActive ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:text-white hover:bg-zinc-800/60'
         )
       }
     >
       <Icon className="h-4 w-4 shrink-0" />
-      {label}
+      {!collapsed && label}
     </NavLink>
   );
 }
 
+const SIDEBAR_KEY = 'sidebar:collapsed';
+
 function Sidebar() {
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem(SIDEBAR_KEY) === '1');
+
+  const toggle = () => {
+    setCollapsed(c => {
+      localStorage.setItem(SIDEBAR_KEY, c ? '0' : '1');
+      return !c;
+    });
+  };
+
   return (
-    <aside className="w-56 shrink-0 flex flex-col border-r border-zinc-800 bg-zinc-950 py-6">
-      <div className="px-4 mb-6">
-        <h1 className="text-sm font-semibold text-white tracking-tight">Personal Finance</h1>
+    <aside className={cn(
+      'shrink-0 flex flex-col border-r border-zinc-800 bg-zinc-950 py-6 transition-[width] duration-200',
+      collapsed ? 'w-14' : 'w-56'
+    )}>
+      <div className={cn('mb-6 flex items-center', collapsed ? 'justify-center px-0' : 'justify-between px-4')}>
+        {!collapsed && <h1 className="text-sm font-semibold text-white tracking-tight">Personal Finance</h1>}
+        <button
+          onClick={toggle}
+          title={collapsed ? 'Expand menu' : 'Collapse menu'}
+          className="text-zinc-500 hover:text-zinc-200 transition-colors"
+        >
+          {collapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+        </button>
       </div>
 
       <nav className="flex-1 px-2 space-y-4">
         {NAV_GROUPS.map(group => (
           <div key={group.label}>
-            <p className="px-3 mb-1 text-[10px] font-semibold uppercase tracking-widest text-zinc-600">
-              {group.label}
-            </p>
+            {!collapsed && (
+              <p className="px-3 mb-1 text-[10px] font-semibold uppercase tracking-widest text-zinc-600">
+                {group.label}
+              </p>
+            )}
             <div className="space-y-0.5">
               {group.items.map(item => (
-                <NavItem key={item.to} to={item.to} icon={item.icon} label={item.label} end={item.to === '/'} />
+                <NavItem key={item.to} to={item.to} icon={item.icon} label={item.label} end={item.to === '/'} collapsed={collapsed} />
               ))}
             </div>
           </div>
@@ -65,7 +91,7 @@ function Sidebar() {
       </nav>
 
       <div className="px-2 border-t border-zinc-800 pt-2">
-        <NavItem to={CONTROL_PANEL.to} icon={CONTROL_PANEL.icon} label={CONTROL_PANEL.label} />
+        <NavItem to={CONTROL_PANEL.to} icon={CONTROL_PANEL.icon} label={CONTROL_PANEL.label} collapsed={collapsed} />
       </div>
     </aside>
   );

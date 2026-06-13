@@ -7,12 +7,14 @@ const router = Router();
 
 router.get('/', (req: Request, res: Response) => {
   const db = getDb();
-  const { monthId, type, categoryId, bank, search } = req.query as Record<string, string>;
+  const { monthId, type, categoryId, bank, search, grouped } = req.query as Record<string, string>;
 
   let query = `
-    SELECT t.*, c.display_name as category_display_name, c.color as category_color, c.name as category_name
+    SELECT t.*, c.display_name as category_display_name, c.color as category_color, c.name as category_name,
+           g.name as group_name, g.color as group_color
     FROM transactions t
     LEFT JOIN categories c ON t.category_id = c.id
+    LEFT JOIN groups g ON t.group_id = g.id
     WHERE 1=1
   `;
   const params: unknown[] = [];
@@ -21,7 +23,25 @@ router.get('/', (req: Request, res: Response) => {
   if (type) { query += ' AND t.type = ?'; params.push(type); }
   if (categoryId) { query += ' AND t.category_id = ?'; params.push(parseInt(categoryId)); }
   if (bank) { query += ' AND t.bank = ?'; params.push(bank); }
-  if (search) { query += ' AND t.description LIKE ?'; params.push(`%${search}%`); }
+  if (grouped === '1') { query += ' AND t.group_id IS NOT NULL'; }
+  if (search) {
+    // Unified search: match any displayed field. Dates match both ISO (2026-04-30)
+    // and the UI's DD/MM/YY format; amounts match their 2-decimal rendering.
+    query += ` AND (
+      t.description LIKE ?
+      OR t.raw_description LIKE ?
+      OR t.date LIKE ?
+      OR strftime('%d/%m/%y', t.date) LIKE ?
+      OR strftime('%d/%m/%Y', t.date) LIKE ?
+      OR printf('%.2f', t.amount) LIKE ?
+      OR t.bank LIKE ?
+      OR c.display_name LIKE ?
+      OR g.name LIKE ?
+    )`;
+    const term = `%${search}%`;
+    const amountTerm = `%${search.replace(/[€\s]/g, '')}%`;
+    params.push(term, term, term, term, term, amountTerm, term, term, term);
+  }
 
   query += ' ORDER BY t.date DESC, t.id DESC';
 

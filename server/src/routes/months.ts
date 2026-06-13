@@ -99,14 +99,27 @@ router.get('/:year/:month/summary', (req: Request, res: Response) => {
     "SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE month_id = ? AND type = 'expense'"
   ).get(monthRecord.id) as { total: number }).total;
 
+  // byCategory: ungrouped transactions roll up under their real category (Part A);
+  // grouped transactions roll up under a synthetic `group:{name}` label per type
+  // (Part B). Grouped slices use a stable negative category_id so the Dashboard's
+  // prev/cur diff keeps keying correctly: expense → -g.id, income → -(g.id + 1e6).
   const byCategory = db.prepare(`
-    SELECT c.id as category_id, c.name as category_name, c.display_name, c.type, c.color, COALESCE(SUM(t.amount), 0) as total
+    SELECT c.id as category_id, c.name as category_name, c.display_name, c.type, c.color,
+           COALESCE(SUM(t.amount), 0) as total
     FROM categories c
-    LEFT JOIN transactions t ON t.category_id = c.id AND t.month_id = ?
+    LEFT JOIN transactions t ON t.category_id = c.id AND t.month_id = ? AND t.group_id IS NULL
     WHERE c.is_active = 1
     GROUP BY c.id
-    ORDER BY c.type, c.sort_order
-  `).all(monthRecord.id);
+    UNION ALL
+    SELECT CASE WHEN t.type = 'income' THEN -(g.id + 1000000) ELSE -g.id END as category_id,
+           'group:' || g.name as category_name,
+           'group:' || g.name as display_name,
+           t.type as type, g.color as color, COALESCE(SUM(t.amount), 0) as total
+    FROM groups g
+    JOIN transactions t ON t.group_id = g.id AND t.month_id = ?
+    GROUP BY g.id, t.type
+    ORDER BY type, category_name
+  `).all(monthRecord.id, monthRecord.id);
 
   // Effective budgets for the month: active monthly rows take precedence over
   // active stable rows. Inactive rows of either kind are excluded entirely.
