@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import { query, withTx } from './pg';
 
 const EXPENSE_CATEGORIES = [
   { name: 'groceries', display_name: 'Groceries', color: '#22c55e', sort_order: 1 },
@@ -21,22 +21,19 @@ const INCOME_CATEGORIES = [
   { name: 'extra', display_name: 'Extra', color: '#a7f3d0', sort_order: 4 },
 ];
 
-export function seedCategories(db: Database.Database): void {
-  const count = (db.prepare('SELECT COUNT(*) as c FROM categories').get() as { c: number }).c;
-  if (count > 0) return;
+/** Seed the default category set for a user. No-op if they already have any. */
+export async function seedCategories(userId: string): Promise<void> {
+  const rows = await query<{ c: number }>('SELECT COUNT(*)::int AS c FROM categories WHERE user_id = $1', [userId]);
+  if (rows[0].c > 0) return;
 
-  const insert = db.prepare(
-    'INSERT OR IGNORE INTO categories (name, display_name, type, color, sort_order) VALUES (?, ?, ?, ?, ?)'
-  );
-
-  const insertMany = db.transaction(() => {
-    for (const cat of EXPENSE_CATEGORIES) {
-      insert.run(cat.name, cat.display_name, 'expense', cat.color, cat.sort_order);
-    }
-    for (const cat of INCOME_CATEGORIES) {
-      insert.run(cat.name, cat.display_name, 'income', cat.color, cat.sort_order);
-    }
+  await withTx(async (client) => {
+    const insert = (name: string, display: string, type: string, color: string, sort: number) =>
+      client.query(
+        `INSERT INTO categories (user_id, name, display_name, type, color, sort_order)
+         VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (user_id, name) DO NOTHING`,
+        [userId, name, display, type, color, sort],
+      );
+    for (const cat of EXPENSE_CATEGORIES) await insert(cat.name, cat.display_name, 'expense', cat.color, cat.sort_order);
+    for (const cat of INCOME_CATEGORIES) await insert(cat.name, cat.display_name, 'income', cat.color, cat.sort_order);
   });
-
-  insertMany();
 }

@@ -1,17 +1,19 @@
 import Anthropic from '@anthropic-ai/sdk';
-import Database from 'better-sqlite3';
+import { query } from './db/pg';
 import { RawTransaction, CategorizedTransaction, Category, MerchantRule } from './types';
 
 const client = new Anthropic();
 
 export async function categorize(
   transactions: RawTransaction[],
-  db: Database.Database
+  userId: string,
 ): Promise<CategorizedTransaction[]> {
-  const categories = db.prepare('SELECT id, name, display_name FROM categories WHERE is_active = 1').all() as Pick<Category, 'id' | 'name' | 'display_name'>[];
+  const categories = await query<Pick<Category, 'id' | 'name' | 'display_name'>>(
+    'SELECT id, name, display_name FROM categories WHERE user_id = $1 AND is_active = 1', [userId],
+  );
   const categoryByName = new Map(categories.map(c => [c.name.toLowerCase(), c.id]));
 
-  const rules = db.prepare('SELECT * FROM merchant_rules').all() as MerchantRule[];
+  const rules = await query<MerchantRule>('SELECT * FROM merchant_rules WHERE user_id = $1', [userId]);
 
   const results: CategorizedTransaction[] = [];
   const unmatched: Array<{ idx: number; tx: RawTransaction }> = [];
@@ -92,7 +94,7 @@ Rules:
 
       for (const item of aiResults) {
         const matched = unmatched.find(u => u.idx === item.id);
-        if (!matched) continue; // AI returned an id that doesn't correspond to any unmatched transaction
+        if (!matched) continue;
         const { idx } = matched;
         const categoryId = categoryByName.get(item.category.toLowerCase()) ?? null;
         results[idx] = {
@@ -104,7 +106,6 @@ Rules:
     }
   } catch (err) {
     console.error('AI categorization failed:', err);
-    // Fallback: leave category_id as null for unmatched
   }
 
   return results;

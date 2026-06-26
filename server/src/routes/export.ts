@@ -4,7 +4,7 @@ import os from 'os';
 import path from 'path';
 import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
-import { getDb } from '../db/index';
+import { query, one } from '../db/pg';
 import { computeBalances } from './months';
 
 const router = Router();
@@ -53,51 +53,49 @@ function fmtRange(o: ExportOptions) {
   return same ? fmtMonth(o.fromYear, o.fromMonth) : `${fmtMonth(o.fromYear, o.fromMonth)} – ${fmtMonth(o.toYear, o.toMonth)}`;
 }
 
-function getMonthsInRange(db: ReturnType<typeof getDb>, opts: ExportOptions): MonthRow[] {
+async function getMonthsInRange(userId: string, opts: ExportOptions): Promise<MonthRow[]> {
   const from = monthKey(opts.fromYear, opts.fromMonth);
   const to   = monthKey(opts.toYear,   opts.toMonth);
   const [lo, hi] = from <= to ? [from, to] : [to, from];
-  const rows = db.prepare('SELECT id, year, month FROM months ORDER BY year ASC, month ASC').all() as MonthRow[];
+  const rows = await query<MonthRow>('SELECT id, year, month FROM months WHERE user_id = $1 ORDER BY year ASC, month ASC', [userId]);
   return rows.filter(m => {
     const k = monthKey(m.year, m.month);
     return k >= lo && k <= hi;
   });
 }
 
-function getTransactions(db: ReturnType<typeof getDb>, monthIds: number[], typeFilter: TypeFilter): TxRow[] {
+async function getTransactions(userId: string, monthIds: number[], typeFilter: TypeFilter): Promise<TxRow[]> {
   if (monthIds.length === 0) return [];
-  const placeholders = monthIds.map(() => '?').join(', ');
-  // 'all' means all *real* flows — exclude transfers (internal moves), which are
-  // neither income nor expense and would otherwise be miscounted as +income.
+  const placeholders = monthIds.map((_, i) => `$${i + 2}`).join(', ');
+  // 'all' means all *real* flows — exclude transfers (internal moves).
   const typeClause = typeFilter === 'all' ? "AND t.type IN ('expense', 'income')" : `AND t.type = '${typeFilter}'`;
-  return db.prepare(`
+  return await query<TxRow>(`
     SELECT t.id, t.month_id, t.date, t.description, t.amount, t.type, t.bank,
            c.display_name AS category_display_name
     FROM transactions t
     LEFT JOIN categories c ON t.category_id = c.id
-    WHERE t.month_id IN (${placeholders})
+    WHERE t.user_id = $1 AND t.month_id IN (${placeholders})
       ${typeClause}
     ORDER BY t.date ASC, t.id ASC
-  `).all(...monthIds) as TxRow[];
+  `, [userId, ...monthIds]);
 }
 
-function getMonthSummary(db: ReturnType<typeof getDb>, m: MonthRow): MonthSummary {
-  const income = (db.prepare(
-    "SELECT COALESCE(SUM(amount),0) as total FROM transactions WHERE month_id=? AND type='income'"
-  ).get(m.id) as { total: number }).total;
-  const expenses = (db.prepare(
-    "SELECT COALESCE(SUM(amount),0) as total FROM transactions WHERE month_id=? AND type='expense'"
-  ).get(m.id) as { total: number }).total;
+async function getMonthSummary(userId: string, m: MonthRow): Promise<MonthSummary> {
+  const income = (await one<{ total: number }>(
+    "SELECT COALESCE(SUM(amount),0) as total FROM transactions WHERE month_id = $1 AND type='income'", [m.id],
+  ))!.total;
+  const expenses = (await one<{ total: number }>(
+    "SELECT COALESCE(SUM(amount),0) as total FROM transactions WHERE month_id = $1 AND type='expense'", [m.id],
+  ))!.total;
 
-  // Mirror of months.ts summary: ungrouped txns under their category (Part A),
-  // grouped txns under a synthetic `group:{name}` label per type (Part B).
-  const byCategory = db.prepare(`
+  // $1 = month id (user-scoped), $2 = user id (scopes the category/stable-budget lists).
+  const byCategory = await query<CategoryTotalRow>(`
     SELECT c.id as category_id, c.name as category_name, c.display_name, c.type, c.color,
            COALESCE(SUM(t.amount), 0) as total
     FROM categories c
-    LEFT JOIN transactions t ON t.category_id = c.id AND t.month_id = ? AND t.group_id IS NULL
-    WHERE c.is_active = 1
-       OR EXISTS (SELECT 1 FROM transactions t2 WHERE t2.category_id = c.id AND t2.month_id = ? AND t2.group_id IS NULL)
+    LEFT JOIN transactions t ON t.category_id = c.id AND t.month_id = $1 AND t.group_id IS NULL
+    WHERE c.user_id = $2
+      AND (c.is_active = 1 OR EXISTS (SELECT 1 FROM transactions t2 WHERE t2.category_id = c.id AND t2.month_id = $1 AND t2.group_id IS NULL))
     GROUP BY c.id
     UNION ALL
     SELECT CASE WHEN t.type = 'income' THEN -(g.id + 1000000) ELSE -g.id END as category_id,
@@ -105,36 +103,36 @@ function getMonthSummary(db: ReturnType<typeof getDb>, m: MonthRow): MonthSummar
            'group:' || g.name as display_name,
            t.type as type, g.color as color, COALESCE(SUM(t.amount), 0) as total
     FROM groups g
-    JOIN transactions t ON t.group_id = g.id AND t.month_id = ?
+    JOIN transactions t ON t.group_id = g.id AND t.month_id = $1
     GROUP BY g.id, t.type
     UNION ALL
     SELECT CASE WHEN t.type = 'income' THEN -1000000 ELSE 0 END as category_id,
            'uncategorized' as category_name, 'Uncategorized' as display_name,
            t.type as type, '#71717a' as color, COALESCE(SUM(t.amount), 0) as total
     FROM transactions t
-    WHERE t.month_id = ? AND t.group_id IS NULL AND t.category_id IS NULL AND t.type IN ('expense', 'income')
+    WHERE t.month_id = $1 AND t.group_id IS NULL AND t.category_id IS NULL AND t.type IN ('expense', 'income')
     GROUP BY t.type
     ORDER BY type, category_name
-  `).all(m.id, m.id, m.id, m.id) as CategoryTotalRow[];
+  `, [m.id, userId]);
 
-  const budgets = db.prepare(`
+  const budgets = await query<BudgetRow>(`
     SELECT b.category_id, b.planned, b.is_active,
            c.type as category_type, c.display_name
     FROM budgets b
     JOIN categories c ON b.category_id = c.id
-    WHERE b.month_id = ? AND b.is_active = 1
+    WHERE b.month_id = $1 AND b.is_active = 1
     UNION ALL
     SELECT sb.category_id, sb.planned, sb.is_active,
            c.type as category_type, c.display_name
     FROM stable_budgets sb
     JOIN categories c ON sb.category_id = c.id
-    WHERE sb.is_active = 1
+    WHERE sb.user_id = $2 AND sb.is_active = 1
       AND sb.category_id NOT IN (
-        SELECT category_id FROM budgets WHERE month_id = ? AND is_active = 1
+        SELECT category_id FROM budgets WHERE month_id = $1 AND is_active = 1
       )
-  `).all(m.id, m.id) as BudgetRow[];
+  `, [m.id, userId]);
 
-  const balances = computeBalances(db, m.year, m.month) ?? { start_balance: 0, end_balance: 0 };
+  const balances = (await computeBalances(userId, m.year, m.month)) ?? { start_balance: 0, end_balance: 0 };
 
   return {
     year: m.year, month: m.month,
@@ -165,8 +163,8 @@ interface AnalyticsData {
   topCategories: Array<{ display_name: string; type: 'expense' | 'income'; total: number }>;
 }
 
-function computeAnalyticsData(db: ReturnType<typeof getDb>, months: MonthRow[], typeFilter: TypeFilter): AnalyticsData {
-  const summaries = months.map(m => getMonthSummary(db, m));
+async function computeAnalyticsData(userId: string, months: MonthRow[], typeFilter: TypeFilter): Promise<AnalyticsData> {
+  const summaries = await Promise.all(months.map(m => getMonthSummary(userId, m)));
   const totals = summaries.reduce(
     (acc, s) => ({ income: acc.income + s.income, expenses: acc.expenses + s.expenses, saved: acc.saved + s.saved }),
     { income: 0, expenses: 0, saved: 0 },
@@ -188,7 +186,6 @@ function computeAnalyticsData(db: ReturnType<typeof getDb>, months: MonthRow[], 
     worstSaved:     pick('saved',    'min'),
   };
 
-  // Aggregate categories over the period (respecting type filter)
   const catMap = new Map<number, { display_name: string; type: 'expense' | 'income'; total: number }>();
   for (const s of summaries) {
     for (const c of s.byCategory) {
@@ -240,8 +237,7 @@ function findPdfFonts(): PdfFonts | null {
 
 /* ─── Excel builder ─── */
 
-async function buildExcel(opts: ExportOptions, months: MonthRow[]): Promise<Buffer> {
-  const db = getDb();
+async function buildExcel(userId: string, opts: ExportOptions, months: MonthRow[]): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Personal Finance';
   wb.created = new Date();
@@ -258,7 +254,7 @@ async function buildExcel(opts: ExportOptions, months: MonthRow[]): Promise<Buff
       { header: 'Type', key: 'type', width: 10 },
       { header: 'Amount', key: 'amount', width: 12 },
     ];
-    const txs = getTransactions(db, months.map(m => m.id), opts.typeFilter);
+    const txs = await getTransactions(userId, months.map(m => m.id), opts.typeFilter);
     for (const tx of txs) {
       sheet.addRow({
         date: tx.date,
@@ -270,7 +266,6 @@ async function buildExcel(opts: ExportOptions, months: MonthRow[]): Promise<Buff
       });
     }
     sheet.getRow(1).font = headerStyle as ExcelJS.Row['font'];
-    // Totals row
     const total = txs.reduce((s, t) => s + (t.type === 'expense' ? -t.amount : t.amount), 0);
     const totalRow = sheet.addRow({ date: '', description: `Total (${txs.length} transactions)`, amount: total });
     totalRow.font = { bold: true };
@@ -280,7 +275,7 @@ async function buildExcel(opts: ExportOptions, months: MonthRow[]): Promise<Buff
     const sheet = wb.addWorksheet('Dashboard');
     let row = 1;
     for (const m of months) {
-      const s = getMonthSummary(db, m);
+      const s = await getMonthSummary(userId, m);
       sheet.getCell(row, 1).value = s.label;
       sheet.getCell(row, 1).font = { bold: true, size: 14 };
       row += 1;
@@ -297,7 +292,6 @@ async function buildExcel(opts: ExportOptions, months: MonthRow[]): Promise<Buff
       }
       row += 1;
 
-      // By-category breakdown
       const cats = filterCategories(s.byCategory, opts.typeFilter);
       const budgetMap = new Map(s.budgets.map(b => [b.category_id, b.planned]));
       const headers = ['Category', 'Type', 'Planned', 'Actual', 'Diff'];
@@ -327,7 +321,7 @@ async function buildExcel(opts: ExportOptions, months: MonthRow[]): Promise<Buff
 
   if (opts.sections.includes('analytics')) {
     const sheet = wb.addWorksheet('Analytics');
-    const a = computeAnalyticsData(db, months, opts.typeFilter);
+    const a = await computeAnalyticsData(userId, months, opts.typeFilter);
     sheet.columns = [
       { width: 28 }, { width: 16 }, { width: 16 }, { width: 16 }, { width: 16 },
     ] as Partial<ExcelJS.Column>[];
@@ -336,7 +330,6 @@ async function buildExcel(opts: ExportOptions, months: MonthRow[]): Promise<Buff
     const showExpenses = opts.typeFilter !== 'income';
     let row = 1;
 
-    // Overview
     sheet.getCell(row, 1).value = 'Overview';
     sheet.getCell(row, 1).font = { bold: true, size: 14 };
     row += 2;
@@ -361,7 +354,6 @@ async function buildExcel(opts: ExportOptions, months: MonthRow[]): Promise<Buff
     }
     row += 2;
 
-    // Monthly trend
     sheet.getCell(row, 1).value = 'Monthly trend';
     sheet.getCell(row, 1).font = { bold: true, size: 12 };
     row += 1;
@@ -384,7 +376,6 @@ async function buildExcel(opts: ExportOptions, months: MonthRow[]): Promise<Buff
     }
     row += 2;
 
-    // Top categories (aggregated)
     if (a.topCategories.length > 0) {
       sheet.getCell(row, 1).value = 'Top categories (across period)';
       sheet.getCell(row, 1).font = { bold: true, size: 12 };
@@ -411,9 +402,13 @@ async function buildExcel(opts: ExportOptions, months: MonthRow[]): Promise<Buff
 
 /* ─── PDF builder ─── */
 
-function buildPdf(opts: ExportOptions, months: MonthRow[]): Promise<Buffer> {
+async function buildPdf(userId: string, opts: ExportOptions, months: MonthRow[]): Promise<Buffer> {
+  // Pre-fetch all DB-backed data up front so the PDF drawing stays synchronous.
+  const pdfTxs = opts.sections.includes('transactions') ? await getTransactions(userId, months.map(m => m.id), opts.typeFilter) : [];
+  const pdfSummaries = opts.sections.includes('dashboard') ? await Promise.all(months.map(m => getMonthSummary(userId, m))) : [];
+  const pdfAnalytics = opts.sections.includes('analytics') ? await computeAnalyticsData(userId, months, opts.typeFilter) : null;
+
   return new Promise((resolve, reject) => {
-    const db = getDb();
     const doc = new PDFDocument({ size: 'A4', margin: 40 });
     const chunks: Buffer[] = [];
     doc.on('data', c => chunks.push(c as Buffer));
@@ -488,7 +483,7 @@ function buildPdf(opts: ExportOptions, months: MonthRow[]): Promise<Buffer> {
     // ─── Transactions ───
     if (opts.sections.includes('transactions')) {
       drawSubtitle('Transactions');
-      const txs = getTransactions(db, months.map(m => m.id), opts.typeFilter);
+      const txs = pdfTxs;
       if (txs.length === 0) {
         drawMeta('No transactions match the selection.');
       } else {
@@ -512,8 +507,7 @@ function buildPdf(opts: ExportOptions, months: MonthRow[]): Promise<Buffer> {
     if (opts.sections.includes('dashboard')) {
       if (doc.y > doc.page.height - doc.page.margins.bottom - 100) doc.addPage();
       drawSubtitle('Dashboard');
-      for (const m of months) {
-        const s = getMonthSummary(db, m);
+      for (const s of pdfSummaries) {
         doc.font(fontBold).fontSize(11).fillColor('#111').text(s.label);
         doc.moveDown(0.3);
 
@@ -543,11 +537,10 @@ function buildPdf(opts: ExportOptions, months: MonthRow[]): Promise<Buffer> {
     if (opts.sections.includes('analytics')) {
       if (doc.y > doc.page.height - doc.page.margins.bottom - 100) doc.addPage();
       drawSubtitle('Analytics');
-      const a = computeAnalyticsData(db, months, opts.typeFilter);
+      const a = pdfAnalytics!;
       const showIncome   = opts.typeFilter !== 'expense';
       const showExpenses = opts.typeFilter !== 'income';
 
-      // Overview
       doc.font(fontBold).fontSize(11).fillColor('#111').text('Overview');
       doc.moveDown(0.3);
       const overviewRows: string[][] = [['Months covered', String(a.summaries.length)]];
@@ -569,7 +562,6 @@ function buildPdf(opts: ExportOptions, months: MonthRow[]): Promise<Buffer> {
         overviewRows.push([`Worst savings month (${a.extremes.worstSaved.label})`, fmtAmount(a.extremes.worstSaved.value)]);
       drawTable(['Metric', 'Value'], overviewRows, [300, pageWidth - 300], ['left', 'right']);
 
-      // Monthly trend table
       if (doc.y > doc.page.height - doc.page.margins.bottom - 100) doc.addPage();
       doc.font(fontBold).fontSize(11).fillColor('#111').text('Monthly trend');
       doc.moveDown(0.3);
@@ -589,7 +581,6 @@ function buildPdf(opts: ExportOptions, months: MonthRow[]): Promise<Buffer> {
       });
       drawTable(trendHeaders, trendRows, trendWidths, trendAlign);
 
-      // Top categories
       if (a.topCategories.length > 0) {
         if (doc.y > doc.page.height - doc.page.margins.bottom - 100) doc.addPage();
         doc.font(fontBold).fontSize(11).fillColor('#111').text('Top categories (across period)');
@@ -613,6 +604,7 @@ function buildPdf(opts: ExportOptions, months: MonthRow[]): Promise<Buffer> {
 /* ─── Route ─── */
 
 router.post('/', async (req: Request, res: Response) => {
+  const userId = req.userId!;
   const opts = req.body as Partial<ExportOptions>;
   if (!opts || (opts.format !== 'xlsx' && opts.format !== 'pdf')) {
     res.status(400).json({ error: 'format must be xlsx or pdf' });
@@ -636,8 +628,7 @@ router.post('/', async (req: Request, res: Response) => {
     typeFilter,
   };
 
-  const db = getDb();
-  const months = getMonthsInRange(db, normalized);
+  const months = await getMonthsInRange(userId, normalized);
 
   const fromStr = `${normalized.fromYear}-${String(normalized.fromMonth).padStart(2, '0')}`;
   const toStr   = `${normalized.toYear}-${String(normalized.toMonth).padStart(2, '0')}`;
@@ -645,12 +636,12 @@ router.post('/', async (req: Request, res: Response) => {
 
   try {
     if (normalized.format === 'xlsx') {
-      const buf = await buildExcel(normalized, months);
+      const buf = await buildExcel(userId, normalized, months);
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename="finance-${periodStr}.xlsx"`);
       res.send(buf);
     } else {
-      const buf = await buildPdf(normalized, months);
+      const buf = await buildPdf(userId, normalized, months);
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `attachment; filename="finance-${periodStr}.pdf"`);
       res.send(buf);

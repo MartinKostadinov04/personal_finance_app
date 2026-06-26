@@ -1,13 +1,15 @@
 import { useState } from 'react';
 import { NavLink } from 'react-router-dom';
-import { Menu, X } from 'lucide-react';
+import { Menu, X, LogOut } from 'lucide-react';
 import { NAV_ITEMS } from '@/lib/nav';
+import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils';
 
 // Phone-only navigation: a circular bottom-right FAB that opens the destinations
 // as labeled pills stacked above it. Hidden at md+ where the sidebar takes over.
 export function MobileNav() {
   const [open, setOpen] = useState(false);
+  const { signOut } = useAuth();
 
   // Render closest-to-FAB last so the visual stack reads top→bottom in nav order.
   const items = [...NAV_ITEMS].reverse();
@@ -46,6 +48,19 @@ export function MobileNav() {
             <item.icon className="h-4 w-4 shrink-0" />
           </NavLink>
         ))}
+
+        {/* Sign out */}
+        <button
+          onClick={() => { setOpen(false); signOut(); }}
+          style={{ transitionDelay: open ? `${items.length * 40}ms` : '0ms' }}
+          className={cn(
+            'flex items-center gap-2.5 rounded-full pl-4 pr-3 py-2.5 shadow-lg border text-sm font-medium transition-all duration-200 bg-zinc-800 border-zinc-700 text-zinc-100',
+            open ? 'translate-y-0 opacity-100' : 'pointer-events-none translate-y-3 opacity-0'
+          )}
+        >
+          <span>Sign out</span>
+          <LogOut className="h-4 w-4 shrink-0" />
+        </button>
       </div>
 
       {/* FAB */}

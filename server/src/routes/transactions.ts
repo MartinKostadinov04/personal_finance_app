@@ -1,56 +1,57 @@
 import { Router, Request, Response } from 'express';
-import { getDb } from '../db/index';
+import { query, one } from '../db/pg';
 import { resolveMonthId } from '../db/months';
 import { Transaction } from '../types';
 
 const router = Router();
 
-router.get('/', (req: Request, res: Response) => {
-  const db = getDb();
+router.get('/', async (req: Request, res: Response) => {
+  const userId = req.userId!;
   const { monthId, type, categoryId, bank, search, grouped } = req.query as Record<string, string>;
 
-  let query = `
+  const params: unknown[] = [];
+  const p = (v: unknown) => { params.push(v); return `$${params.length}`; };
+
+  let q = `
     SELECT t.*, c.display_name as category_display_name, c.color as category_color, c.name as category_name,
            g.name as group_name, g.color as group_color
     FROM transactions t
     LEFT JOIN categories c ON t.category_id = c.id
     LEFT JOIN groups g ON t.group_id = g.id
-    WHERE 1=1
+    WHERE t.user_id = ${p(userId)}
   `;
-  const params: unknown[] = [];
 
-  if (monthId) { query += ' AND t.month_id = ?'; params.push(parseInt(monthId)); }
-  if (type) { query += ' AND t.type = ?'; params.push(type); }
-  if (categoryId) { query += ' AND t.category_id = ?'; params.push(parseInt(categoryId)); }
-  if (bank) { query += ' AND t.bank = ?'; params.push(bank); }
-  if (grouped === '1') { query += ' AND t.group_id IS NOT NULL'; }
+  if (monthId) { q += ` AND t.month_id = ${p(parseInt(monthId))}`; }
+  if (type) { q += ` AND t.type = ${p(type)}`; }
+  if (categoryId) { q += ` AND t.category_id = ${p(parseInt(categoryId))}`; }
+  if (bank) { q += ` AND t.bank = ${p(bank)}`; }
+  if (grouped === '1') { q += ' AND t.group_id IS NOT NULL'; }
   if (search) {
-    // Unified search: match any displayed field. Dates match both ISO (2026-04-30)
-    // and the UI's DD/MM/YY format; amounts match their 2-decimal rendering.
-    query += ` AND (
-      t.description LIKE ?
-      OR t.raw_description LIKE ?
-      OR t.date LIKE ?
-      OR strftime('%d/%m/%y', t.date) LIKE ?
-      OR strftime('%d/%m/%Y', t.date) LIKE ?
-      OR printf('%.2f', t.amount) LIKE ?
-      OR t.bank LIKE ?
-      OR c.display_name LIKE ?
-      OR g.name LIKE ?
-    )`;
+    // Unified search: match any displayed field. ILIKE keeps the case-insensitive
+    // behavior SQLite's LIKE had; to_char renders dates/amounts the way the UI does.
     const term = `%${search}%`;
     const amountTerm = `%${search.replace(/[€\s]/g, '')}%`;
-    params.push(term, term, term, term, term, amountTerm, term, term, term);
+    q += ` AND (
+      t.description ILIKE ${p(term)}
+      OR t.raw_description ILIKE ${p(term)}
+      OR t.date ILIKE ${p(term)}
+      OR to_char(t.date::date, 'DD/MM/YY') ILIKE ${p(term)}
+      OR to_char(t.date::date, 'DD/MM/YYYY') ILIKE ${p(term)}
+      OR to_char(t.amount, 'FM9999999990.00') ILIKE ${p(amountTerm)}
+      OR t.bank ILIKE ${p(term)}
+      OR c.display_name ILIKE ${p(term)}
+      OR g.name ILIKE ${p(term)}
+    )`;
   }
 
-  query += ' ORDER BY t.date DESC, t.id DESC';
+  q += ' ORDER BY t.date DESC, t.id DESC';
 
-  const transactions = db.prepare(query).all(...params);
+  const transactions = await query(q, params);
   res.json(transactions);
 });
 
-router.post('/', (req: Request, res: Response) => {
-  const db = getDb();
+router.post('/', async (req: Request, res: Response) => {
+  const userId = req.userId!;
   const { month_id, date, amount, description, type, category_id, bank } = req.body as Partial<Transaction>;
 
   if (!month_id || !date || amount === undefined || !description || !type || !bank) {
@@ -58,59 +59,56 @@ router.post('/', (req: Request, res: Response) => {
     return;
   }
 
-  // Store raw_description = description for manual entries so merchant rules and
+  // raw_description = description for manual entries so merchant rules and
   // duplicate detection (which key on raw_description) work on them too.
-  const result = db.prepare(
-    'INSERT INTO transactions (month_id, date, amount, description, raw_description, type, category_id, bank, manually_reviewed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)'
-  ).run(month_id, date, amount, description, description, type, category_id ?? null, bank);
+  const created = await one(
+    `INSERT INTO transactions (user_id, month_id, date, amount, description, raw_description, type, category_id, bank, manually_reviewed)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1) RETURNING *`,
+    [userId, month_id, date, amount, description, description, type, category_id ?? null, bank],
+  );
 
-  const created = db.prepare('SELECT * FROM transactions WHERE id = ?').get(result.lastInsertRowid);
   res.status(201).json(created);
 });
 
-router.put('/:id', (req: Request, res: Response) => {
-  const db = getDb();
+router.put('/:id', async (req: Request, res: Response) => {
+  const userId = req.userId!;
   const id = parseInt(req.params.id);
   const { date, amount, description, type, category_id, bank, year: targetYear, month: targetMonth } = req.body as Partial<Transaction> & { year?: number; month?: number };
 
-  // Use an explicit presence flag for category_id so we can distinguish
-  // "not provided" (keep existing) from "explicitly set to null" (clear it).
+  // Explicit presence flag for category_id: distinguish "not provided" (keep) from
+  // "explicitly null" (clear).
   const hasCategoryId = 'category_id' in req.body;
 
-  // Resolve target month_id if year+month provided (atomic INSERT+SELECT)
   const targetMonthId: number | null = (targetYear != null && targetMonth != null)
-    ? resolveMonthId(db, targetYear, targetMonth)
+    ? await resolveMonthId(userId, targetYear, targetMonth)
     : null;
 
-  db.prepare(`
+  const updated = await one(`
     UPDATE transactions SET
-      date = COALESCE(?, date),
-      amount = COALESCE(?, amount),
-      description = COALESCE(?, description),
-      type = COALESCE(?, type),
-      category_id = CASE WHEN ? = 1 THEN ? ELSE category_id END,
-      bank = COALESCE(?, bank),
-      month_id = COALESCE(?, month_id),
+      date = COALESCE($1, date),
+      amount = COALESCE($2, amount),
+      description = COALESCE($3, description),
+      type = COALESCE($4, type),
+      category_id = CASE WHEN $5 = 1 THEN $6::bigint ELSE category_id END,
+      bank = COALESCE($7, bank),
+      month_id = COALESCE($8, month_id),
       manually_reviewed = 1
-    WHERE id = ?
-  `).run(date ?? null, amount ?? null, description ?? null, type ?? null, hasCategoryId ? 1 : 0, category_id ?? null, bank ?? null, targetMonthId, id);
+    WHERE id = $9 AND user_id = $10
+    RETURNING *
+  `, [date ?? null, amount ?? null, description ?? null, type ?? null, hasCategoryId ? 1 : 0, category_id ?? null, bank ?? null, targetMonthId, id, userId]);
 
-  const updated = db.prepare('SELECT * FROM transactions WHERE id = ?').get(id);
   res.json(updated);
 });
 
-router.delete('/:id', (req: Request, res: Response) => {
-  const db = getDb();
-  const id = parseInt(req.params.id);
-  db.prepare('DELETE FROM transactions WHERE id = ?').run(id);
+router.delete('/:id', async (req: Request, res: Response) => {
+  const userId = req.userId!;
+  await query('DELETE FROM transactions WHERE id = $1 AND user_id = $2', [parseInt(req.params.id), userId]);
   res.json({ success: true });
 });
 
 // POST /api/transactions/bulk-categorize
-// Applies a category to all transactions whose raw_description matches a pattern,
-// scoped to a month range determined by `scope`.
-router.post('/bulk-categorize', (req: Request, res: Response) => {
-  const db = getDb();
+router.post('/bulk-categorize', async (req: Request, res: Response) => {
+  const userId = req.userId!;
   const { pattern, category_id, scope, year, month, match_amount, match_type = 'contains' } = req.body as {
     pattern: string;
     category_id: number;
@@ -126,59 +124,42 @@ router.post('/bulk-categorize', (req: Request, res: Response) => {
     return;
   }
 
-  // Match against BOTH the raw bank text and the cleaned description (a rule's
-  // pattern may have come from either; manual entries may lack raw text).
-  const descClause = match_type === 'regex'
-    ? '(raw_description REGEXP ? OR description REGEXP ?)'
-    : '(raw_description LIKE ? OR description LIKE ?)';
-  const descValue = match_type === 'regex' ? pattern : `%${pattern}%`;
-  const descParams = [descValue, descValue];
+  const params: unknown[] = [];
+  const p = (v: unknown) => { params.push(v); return `$${params.length}`; };
 
-  // Optional amount filter: ABS(amount) must match within ±0.005 (rounding safety)
-  const amountClause = match_amount != null ? ' AND ABS(ABS(amount) - ?) < 0.005' : '';
-  const amountParam = match_amount != null ? [Math.abs(match_amount)] : [];
-  let result: { changes: number };
+  const catTok = p(category_id);
+  const userTok = p(userId);
+
+  const regex = match_type === 'regex';
+  const descTok = p(regex ? pattern : `%${pattern}%`);
+  const descClause = regex
+    ? `(raw_description ~* ${descTok} OR description ~* ${descTok})`
+    : `(raw_description ILIKE ${descTok} OR description ILIKE ${descTok})`;
+
+  const amountClause = match_amount != null ? ` AND ABS(ABS(amount) - ${p(Math.abs(match_amount))}) < 0.005` : '';
+
+  let sql: string;
 
   if (scope === 'all') {
-    result = db.prepare(`
-      UPDATE transactions
-      SET category_id = ?, manually_reviewed = 1
-      WHERE ${descClause}${amountClause}
-    `).run(category_id, ...descParams, ...amountParam) as { changes: number };
-
+    sql = `UPDATE transactions SET category_id = ${catTok}, manually_reviewed = 1
+           WHERE user_id = ${userTok} AND ${descClause}${amountClause}`;
   } else if (scope === 'month') {
-    const monthRecord = db.prepare('SELECT id FROM months WHERE year = ? AND month = ?').get(year, month) as { id: number } | undefined;
+    const monthRecord = await one<{ id: number }>('SELECT id FROM months WHERE year = $1 AND month = $2 AND user_id = $3', [year, month, userId]);
     if (!monthRecord) { res.json({ updated: 0 }); return; }
-    result = db.prepare(`
-      UPDATE transactions
-      SET category_id = ?, manually_reviewed = 1
-      WHERE month_id = ? AND ${descClause}${amountClause}
-    `).run(category_id, monthRecord.id, ...descParams, ...amountParam) as { changes: number };
-
+    sql = `UPDATE transactions SET category_id = ${catTok}, manually_reviewed = 1
+           WHERE user_id = ${userTok} AND month_id = ${p(monthRecord.id)} AND ${descClause}${amountClause}`;
   } else if (scope === 'before') {
-    result = db.prepare(`
-      UPDATE transactions
-      SET category_id = ?, manually_reviewed = 1
-      WHERE ${descClause}${amountClause}
-        AND month_id IN (
-          SELECT id FROM months
-          WHERE year < ? OR (year = ? AND month <= ?)
-        )
-    `).run(category_id, ...descParams, ...amountParam, year, year, month) as { changes: number };
-
+    sql = `UPDATE transactions SET category_id = ${catTok}, manually_reviewed = 1
+           WHERE user_id = ${userTok} AND ${descClause}${amountClause}
+             AND month_id IN (SELECT id FROM months WHERE user_id = ${userTok} AND (year < ${p(year)} OR (year = ${p(year)} AND month <= ${p(month)})))`;
   } else { // future
-    result = db.prepare(`
-      UPDATE transactions
-      SET category_id = ?, manually_reviewed = 1
-      WHERE ${descClause}${amountClause}
-        AND month_id IN (
-          SELECT id FROM months
-          WHERE year > ? OR (year = ? AND month >= ?)
-        )
-    `).run(category_id, ...descParams, ...amountParam, year, year, month) as { changes: number };
+    sql = `UPDATE transactions SET category_id = ${catTok}, manually_reviewed = 1
+           WHERE user_id = ${userTok} AND ${descClause}${amountClause}
+             AND month_id IN (SELECT id FROM months WHERE user_id = ${userTok} AND (year > ${p(year)} OR (year = ${p(year)} AND month >= ${p(month)})))`;
   }
 
-  res.json({ updated: result.changes });
+  const updatedRows = await query(sql + ' RETURNING id', params);
+  res.json({ updated: updatedRows.length });
 });
 
 export default router;

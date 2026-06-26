@@ -1,5 +1,8 @@
 node_modules/
 dist/
+# Per-workspace lockfiles — the root package-lock.json is authoritative
+client/package-lock.json
+server/package-lock.json
 data/*.db
 data/*.db-shm
 data/*.db-wal

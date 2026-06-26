@@ -1,15 +1,16 @@
-import Database from 'better-sqlite3';
+import { one } from './pg';
 
 /**
- * Atomically resolve (and create if missing) a month row, returning its id.
- * Wraps INSERT OR IGNORE + SELECT in a single transaction so two concurrent
- * callers cannot interleave and read a stale id.
+ * Atomically resolve (and create if missing) a month row for a user, returning
+ * its id. Uses an upsert with RETURNING so a single statement yields the id
+ * whether the row already existed or was just created.
  */
-export function resolveMonthId(db: Database.Database, year: number, month: number): number {
-  const tx = db.transaction((y: number, m: number) => {
-    db.prepare('INSERT OR IGNORE INTO months (year, month) VALUES (?, ?)').run(y, m);
-    const row = db.prepare('SELECT id FROM months WHERE year = ? AND month = ?').get(y, m) as { id: number };
-    return row.id;
-  });
-  return tx(year, month);
+export async function resolveMonthId(userId: string, year: number, month: number): Promise<number> {
+  const row = await one<{ id: number }>(
+    `INSERT INTO months (user_id, year, month) VALUES ($1, $2, $3)
+     ON CONFLICT (user_id, year, month) DO UPDATE SET year = EXCLUDED.year
+     RETURNING id`,
+    [userId, year, month],
+  );
+  return row!.id;
 }

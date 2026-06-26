@@ -1,24 +1,21 @@
 import { Router, Request, Response } from 'express';
-import { getDb } from '../db/index';
+import { query, one } from '../db/pg';
 
 const router = Router();
 
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 // GET /api/analytics/trend?fromYear=&fromMonth=&toYear=&toMonth=
-// Returns per-month income/expenses/saved, optionally filtered to a date range.
-// All four params are optional; omitting them returns all months with data.
-router.get('/trend', (req: Request, res: Response) => {
-  const db = getDb();
-
+router.get('/trend', async (req: Request, res: Response) => {
+  const userId = req.userId!;
   const fy = req.query.fromYear  ? parseInt(req.query.fromYear  as string) : null;
   const fm = req.query.fromMonth ? parseInt(req.query.fromMonth as string) : null;
   const ty = req.query.toYear    ? parseInt(req.query.toYear    as string) : null;
   const tm = req.query.toMonth   ? parseInt(req.query.toMonth   as string) : null;
 
-  const allMonths = db.prepare(
-    'SELECT * FROM months ORDER BY year ASC, month ASC'
-  ).all() as { id: number; year: number; month: number }[];
+  const allMonths = await query<{ id: number; year: number; month: number }>(
+    'SELECT * FROM months WHERE user_id = $1 ORDER BY year ASC, month ASC', [userId],
+  );
 
   const months = allMonths.filter(m => {
     const after  = fy === null || (m.year > fy) || (m.year === fy && m.month >= (fm ?? 1));
@@ -26,31 +23,31 @@ router.get('/trend', (req: Request, res: Response) => {
     return after && before;
   });
 
-  const incomeStmt  = db.prepare("SELECT COALESCE(SUM(amount),0) as total FROM transactions WHERE month_id=? AND type='income'");
-  const expenseStmt = db.prepare("SELECT COALESCE(SUM(amount),0) as total FROM transactions WHERE month_id=? AND type='expense'");
+  const sumFor = async (monthId: number, type: 'income' | 'expense') =>
+    (await one<{ total: number }>(
+      "SELECT COALESCE(SUM(amount),0) as total FROM transactions WHERE month_id = $1 AND type = $2",
+      [monthId, type],
+    ))!.total;
 
-  const result = months
-    .map(m => {
-      const income   = (incomeStmt.get(m.id)  as { total: number }).total;
-      const expenses = (expenseStmt.get(m.id) as { total: number }).total;
-      return {
-        label: `${MONTH_NAMES[m.month - 1]} '${String(m.year).slice(2)}`,
-        year: m.year,
-        month: m.month,
-        income,
-        expenses,
-        saved: income - expenses,
-      };
-    })
-    .filter(m => m.income > 0 || m.expenses > 0);
+  const result = (await Promise.all(months.map(async m => {
+    const income   = await sumFor(m.id, 'income');
+    const expenses = await sumFor(m.id, 'expense');
+    return {
+      label: `${MONTH_NAMES[m.month - 1]} '${String(m.year).slice(2)}`,
+      year: m.year,
+      month: m.month,
+      income,
+      expenses,
+      saved: income - expenses,
+    };
+  }))).filter(m => m.income > 0 || m.expenses > 0);
 
   res.json(result);
 });
 
 // GET /api/analytics/daily?year=&month=
-// Returns daily expense totals for the selected month and its predecessor
-router.get('/daily', (req: Request, res: Response) => {
-  const db = getDb();
+router.get('/daily', async (req: Request, res: Response) => {
+  const userId = req.userId!;
   const year  = parseInt(req.query.year  as string);
   const month = parseInt(req.query.month as string);
 
@@ -58,23 +55,23 @@ router.get('/daily', (req: Request, res: Response) => {
   const prevMonth = month === 1 ? 12 : month - 1;
 
   const getRecord = (y: number, m: number) =>
-    db.prepare('SELECT id FROM months WHERE year=? AND month=?').get(y, m) as { id: number } | undefined;
+    one<{ id: number }>('SELECT id FROM months WHERE year = $1 AND month = $2 AND user_id = $3', [y, m, userId]);
 
   const getDailyExpenses = (monthId: number) =>
-    db.prepare(`
+    query<{ date: string; amount: number }>(`
       SELECT date, SUM(amount) as amount
       FROM transactions
-      WHERE month_id=? AND type='expense'
+      WHERE month_id = $1 AND type = 'expense'
       GROUP BY date
       ORDER BY date ASC
-    `).all(monthId) as { date: string; amount: number }[];
+    `, [monthId]);
 
-  const cur  = getRecord(year, month);
-  const prev = getRecord(prevYear, prevMonth);
+  const cur  = await getRecord(year, month);
+  const prev = await getRecord(prevYear, prevMonth);
 
   res.json({
-    current:  cur  ? getDailyExpenses(cur.id)  : [],
-    previous: prev ? getDailyExpenses(prev.id) : [],
+    current:  cur  ? await getDailyExpenses(cur.id)  : [],
+    previous: prev ? await getDailyExpenses(prev.id) : [],
   });
 });
 

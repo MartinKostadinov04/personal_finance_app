@@ -87,3 +87,58 @@ export interface AllocationData {
   allowance_f: number;
   difference: number;
 }
+
+/* ─── Bill Splitting ─── */
+
+export interface Bill {
+  id: number;
+  name: string;
+  status: 'open' | 'closed';
+  currency: string;
+  created_by: string;
+  created_at: string;
+  closed_at: string | null;
+}
+
+export interface BillParticipant {
+  id: number;
+  bill_id: number;
+  user_id: string | null;
+  email: string | null;
+  display_name: string;
+  role: 'owner' | 'member';
+  status: 'active' | 'invited' | 'pending';
+  covered_by_participant_id: number | null;
+  settled: boolean;
+  settled_at: string | null;
+  created_at: string;
+}
+
+export interface BillExpensePayer {
+  id: number;
+  expense_id: number;
+  participant_id: number;
+  amount_paid: number;
+}
+
+export interface BillExpenseSplit {
+  id: number;
+  expense_id: number;
+  participant_id: number;
+  share_amount: number;
+  covered_by_participant_id: number | null;
+}
+
+export interface BillExpense {
+  id: number;
+  bill_id: number;
+  name: string;
+  amount: number;
+  spent_at: string;
+  receipt_path: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  payers?: BillExpensePayer[];
+  splits?: BillExpenseSplit[];
+}

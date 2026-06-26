@@ -28,6 +28,27 @@ function saveConfig(rows: AllocationRowConfig[]) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(rows));
 }
 
+// Resolve a stored config against the CURRENT categories. Prefer category names
+// (stable across data migrations / re-seeds); fall back to ids for legacy configs,
+// dropping any that no longer exist.
+function hydrate(rows: AllocationRowConfig[], categories: Category[]): AllocationRowConfig[] {
+  const byName = new Map(categories.map(c => [c.name, c.id]));
+  const validIds = new Set(categories.map(c => c.id));
+  return rows.map(r => {
+    const fromNames = r.categoryNames && r.categoryNames.length
+      ? r.categoryNames.map(n => byName.get(n)).filter((x): x is number => x !== undefined)
+      : null;
+    const categoryIds = fromNames ?? (r.categoryIds ?? []).filter(id => validIds.has(id));
+    return { ...r, categoryIds, formula: r.formula ?? [] };
+  });
+}
+
+// Persist category names alongside ids so the config survives id changes.
+function dehydrate(rows: AllocationRowConfig[], categories: Category[]): AllocationRowConfig[] {
+  const byId = new Map(categories.map(c => [c.id, c.name]));
+  return rows.map(r => ({ ...r, categoryNames: r.categoryIds.map(id => byId.get(id)).filter((x): x is string => x !== undefined) }));
+}
+
 function buildDefault(categories: Category[]): AllocationRowConfig[] {
   const byName = new Map(categories.map(c => [c.name, c.id]));
   const ids = (names: string[]) => names.map(n => byName.get(n)).filter((id): id is number => id !== undefined);
@@ -56,11 +77,19 @@ export function AllocationBreakdown({ currentByCategory }: AllocationBreakdownPr
     if (seeded.current || allCategories.length === 0) return;
     seeded.current = true;
     const stored = loadConfig();
-    if (stored !== null) { setRows(stored); }
-    else { const d = buildDefault(allCategories); setRows(d); saveConfig(d); }
+    if (stored !== null) {
+      const hydrated = hydrate(stored, allCategories);
+      // If the stored config still resolves to real categories, use it.
+      const anyMapped = hydrated.some(r => !r.isDifference && r.categoryIds.length > 0);
+      if (anyMapped) { setRows(hydrated); saveConfig(dehydrate(hydrated, allCategories)); return; }
+      // Otherwise it's stale (e.g. ids changed in a data migration) — rebuild defaults.
+    }
+    const d = buildDefault(allCategories);
+    setRows(d);
+    saveConfig(dehydrate(d, allCategories));
   }, [allCategories]);
 
-  const updateRows = (next: AllocationRowConfig[]) => { setRows(next); saveConfig(next); };
+  const updateRows = (next: AllocationRowConfig[]) => { setRows(next); saveConfig(dehydrate(next, allCategories)); };
 
   // Compute a regular row's value from byCategory
   // Income categories contribute positively, expense categories negatively

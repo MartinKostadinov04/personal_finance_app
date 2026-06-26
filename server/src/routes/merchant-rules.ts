@@ -1,23 +1,24 @@
 import { Router, Request, Response } from 'express';
-import { getDb } from '../db/index';
+import { query, one } from '../db/pg';
 
 const router = Router();
 
-// GET /api/merchant-rules — all rules joined with category info
-router.get('/', (_req: Request, res: Response) => {
-  const db = getDb();
-  const rules = db.prepare(`
+// GET /api/merchant-rules — the user's rules joined with category info
+router.get('/', async (req: Request, res: Response) => {
+  const userId = req.userId!;
+  const rules = await query(`
     SELECT mr.*, c.display_name as category_display_name, c.color as category_color, c.type as category_type
     FROM merchant_rules mr
     LEFT JOIN categories c ON mr.category_id = c.id
+    WHERE mr.user_id = $1
     ORDER BY mr.created_at DESC
-  `).all();
+  `, [userId]);
   res.json(rules);
 });
 
 // POST /api/merchant-rules — create a new rule
-router.post('/', (req: Request, res: Response) => {
-  const db = getDb();
+router.post('/', async (req: Request, res: Response) => {
+  const userId = req.userId!;
   const { pattern, category_id, description_clean, match_amount, match_type = 'contains' } = req.body as {
     pattern: string;
     category_id: number;
@@ -32,31 +33,30 @@ router.post('/', (req: Request, res: Response) => {
   }
 
   try {
-    const result = db.prepare(
-      'INSERT INTO merchant_rules (pattern, category_id, description_clean, match_amount, match_type) VALUES (?, ?, ?, ?, ?)'
-    ).run(pattern.trim(), category_id, description_clean?.trim() ?? null, match_amount ?? null, match_type);
-
-    const created = db.prepare(`
-      SELECT mr.*, c.display_name as category_display_name, c.color as category_color, c.type as category_type
-      FROM merchant_rules mr
-      LEFT JOIN categories c ON mr.category_id = c.id
-      WHERE mr.id = ?
-    `).get(result.lastInsertRowid);
+    const created = await one(`
+      WITH ins AS (
+        INSERT INTO merchant_rules (user_id, pattern, category_id, description_clean, match_amount, match_type)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING *
+      )
+      SELECT ins.*, c.display_name as category_display_name, c.color as category_color, c.type as category_type
+      FROM ins LEFT JOIN categories c ON ins.category_id = c.id
+    `, [userId, pattern.trim(), category_id, description_clean?.trim() ?? null, match_amount ?? null, match_type]);
 
     res.status(201).json(created);
-  } catch (err: any) {
-    // UNIQUE constraint on pattern
-    if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+  } catch (err: unknown) {
+    const e = err as { code?: string; message?: string };
+    if (e.code === '23505') {
       res.status(409).json({ error: 'A rule with this pattern already exists' });
     } else {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: e.message ?? String(err) });
     }
   }
 });
 
 // PUT /api/merchant-rules/:id — update an existing rule
-router.put('/:id', (req: Request, res: Response) => {
-  const db = getDb();
+router.put('/:id', async (req: Request, res: Response) => {
+  const userId = req.userId!;
   const id = parseInt(req.params.id);
   const { pattern, category_id, description_clean, match_amount, match_type } = req.body as {
     pattern?: string;
@@ -67,46 +67,44 @@ router.put('/:id', (req: Request, res: Response) => {
   };
 
   try {
-    // description_clean is COALESCEd so omitting it (the edit dialog doesn't send
-    // it) preserves the stored clean name instead of wiping it to NULL.
-    db.prepare(`
-      UPDATE merchant_rules SET
-        pattern           = ?,
-        category_id       = ?,
-        description_clean = COALESCE(?, description_clean),
-        match_amount      = ?,
-        match_type        = ?
-      WHERE id = ?
-    `).run(
+    const updated = await one(`
+      WITH upd AS (
+        UPDATE merchant_rules SET
+          pattern           = $1,
+          category_id       = $2,
+          description_clean = COALESCE($3, description_clean),
+          match_amount      = $4,
+          match_type        = $5
+        WHERE id = $6 AND user_id = $7
+        RETURNING *
+      )
+      SELECT upd.*, c.display_name as category_display_name, c.color as category_color, c.type as category_type
+      FROM upd LEFT JOIN categories c ON upd.category_id = c.id
+    `, [
       pattern?.trim() ?? null,
       category_id ?? null,
       description_clean?.trim() ?? null,
       match_amount ?? null,
       match_type ?? 'contains',
-      id
-    );
-
-    const updated = db.prepare(`
-      SELECT mr.*, c.display_name as category_display_name, c.color as category_color, c.type as category_type
-      FROM merchant_rules mr
-      LEFT JOIN categories c ON mr.category_id = c.id
-      WHERE mr.id = ?
-    `).get(id);
+      id,
+      userId,
+    ]);
 
     res.json(updated);
-  } catch (err: any) {
-    if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+  } catch (err: unknown) {
+    const e = err as { code?: string; message?: string };
+    if (e.code === '23505') {
       res.status(409).json({ error: 'A rule with this pattern already exists' });
     } else {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: e.message ?? String(err) });
     }
   }
 });
 
 // DELETE /api/merchant-rules/:id
-router.delete('/:id', (req: Request, res: Response) => {
-  const db = getDb();
-  db.prepare('DELETE FROM merchant_rules WHERE id = ?').run(parseInt(req.params.id));
+router.delete('/:id', async (req: Request, res: Response) => {
+  const userId = req.userId!;
+  await query('DELETE FROM merchant_rules WHERE id = $1 AND user_id = $2', [parseInt(req.params.id), userId]);
   res.json({ success: true });
 });
 

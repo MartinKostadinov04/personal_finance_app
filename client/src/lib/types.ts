@@ -46,6 +46,7 @@ export interface Group {
   color: string;
   created_at: string;
   member_count?: number;
+  last_used?: string | null;
 }
 
 export interface Budget {
@@ -120,6 +121,9 @@ export interface AllocationRowConfig {
   id: string;
   label: string;
   categoryIds: number[];
+  // Stable persistence: category names survive id changes (migrations/re-seeds),
+  // whereas categoryIds do not. Hydrated back into categoryIds on load.
+  categoryNames?: string[];
   isDifference: boolean;
   formula: AllocationFormulaEntry[]; // only used when isDifference: true
 }
@@ -132,4 +136,75 @@ export interface ParsedTransaction {
   type: 'expense' | 'income' | 'transfer';
   bank: 'revolut' | 'santander' | 'fibank' | 'manual';
   category_id: number | null;
+}
+
+/* ─── Bill Splitting ─── */
+
+export interface BillParticipant {
+  id: number;
+  bill_id: number;
+  user_id: string | null;
+  email: string | null;
+  display_name: string;
+  role: 'owner' | 'member';
+  status: 'active' | 'invited' | 'pending';
+  covered_by_participant_id: number | null;
+  settled: boolean;
+  settled_at: string | null;
+  created_at: string;
+}
+
+export interface ExpensePayer { id: number; expense_id: number; participant_id: number; amount_paid: number; }
+export interface ExpenseSplit { id: number; expense_id: number; participant_id: number; share_amount: number; covered_by_participant_id: number | null; }
+
+export interface BillExpense {
+  id: number;
+  bill_id: number;
+  name: string;
+  amount: number;
+  spent_at: string;
+  receipt_path: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  payers?: ExpensePayer[];
+  splits?: ExpenseSplit[];
+}
+
+export interface Bill {
+  id: number;
+  name: string;
+  status: 'open' | 'closed';
+  currency: string;
+  created_by: string;
+  created_at: string;
+  closed_at: string | null;
+  participant_count?: number;
+  total_amount?: number;
+  participants?: BillParticipant[];
+}
+
+export interface BillDetail {
+  bill: Bill;
+  participants: BillParticipant[];
+  expenses: BillExpense[];
+}
+
+export interface NetPair { from: number; to: number; amount: number; }
+
+export interface Settlement {
+  matrix: Record<number, Record<number, number>>;
+  netPairs: NetPair[];
+  balances: Record<number, number>;
+  perPersonTotalCost: Record<number, number>;
+  participants: BillParticipant[];
+}
+
+export interface ExpenseInput {
+  name: string;
+  amount: number;
+  spent_at?: string;
+  receipt_path?: string | null;
+  payers: { participant_id: number; amount_paid: number }[];
+  splits: { participant_id: number; share_amount: number; covered_by_participant_id?: number | null }[];
 }

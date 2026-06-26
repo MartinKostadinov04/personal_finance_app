@@ -5,6 +5,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { MonthYearPicker } from '@/components/MonthYearPicker';
+import { DatePicker } from '@/components/DatePicker';
+import { toYMD } from '@/lib/dates';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { groupsApi, monthsApi, transactionsApi } from '@/lib/api';
 import { cn, formatCurrency, formatDate } from '@/lib/utils';
@@ -51,26 +53,40 @@ function TransactionPicker({ year, month, onMonthChange, selected, onToggle, exc
           <p className="text-xs text-zinc-600 text-center py-6">Loading…</p>
         ) : txs.length === 0 ? (
           <p className="text-xs text-zinc-600 text-center py-6">No transactions this month</p>
-        ) : txs.map(tx => {
-          const checked = selected.has(tx.id);
-          return (
-            <div
-              key={tx.id}
-              onClick={() => onToggle(tx.id)}
-              className={cn(
-                'flex items-center gap-3 px-3 py-2 cursor-pointer text-xs border-b border-zinc-800/60 last:border-0',
-                checked ? 'bg-zinc-700/60' : 'hover:bg-zinc-800/40'
-              )}
-            >
-              <input type="checkbox" readOnly checked={checked} className="shrink-0 accent-emerald-500" />
-              <span className="text-zinc-500 tabular-nums shrink-0">{formatDate(tx.date)}</span>
-              <span className="flex-1 truncate" title={tx.description}>{tx.description}</span>
-              <span className={cn('tabular-nums font-mono shrink-0', tx.type === 'income' ? 'text-emerald-500' : 'text-rose-400')}>
-                {tx.type === 'income' ? '+' : '−'}{formatCurrency(tx.amount)}
-              </span>
-            </div>
-          );
-        })}
+        ) : (
+          <table className="w-full text-xs">
+            <tbody>
+              {txs.map(tx => {
+                const checked = selected.has(tx.id);
+                return (
+                  <tr
+                    key={tx.id}
+                    onClick={() => onToggle(tx.id)}
+                    className={cn(
+                      'cursor-pointer border-b border-zinc-800/60 last:border-0',
+                      checked ? 'bg-zinc-700/60' : 'hover:bg-zinc-800/40'
+                    )}
+                  >
+                    <td className="pl-3 py-2 w-0">
+                      <input type="checkbox" readOnly checked={checked} className="accent-emerald-500 block" />
+                    </td>
+                    <td className="px-3 py-2 w-0 whitespace-nowrap text-zinc-500 tabular-nums">
+                      {formatDate(tx.date)}
+                    </td>
+                    <td className="py-2 w-full max-w-0">
+                      <span className="truncate block" title={tx.description}>{tx.description}</span>
+                    </td>
+                    <td className="px-3 py-2 w-0 whitespace-nowrap tabular-nums font-mono text-right">
+                      <span className={cn(tx.type === 'income' ? 'text-emerald-500' : 'text-rose-400')}>
+                        {tx.type === 'income' ? '+' : '−'}{formatCurrency(tx.amount)}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   );
@@ -90,10 +106,8 @@ export function GroupDialog({ open, onOpenChange, year, month }: {
   const [pickYear, setPickYear] = useState(year);
   const [pickMonth, setPickMonth] = useState(month);
   const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [fromY, setFromY] = useState(year);
-  const [fromM, setFromM] = useState(month);
-  const [toY, setToY] = useState(year);
-  const [toM, setToM] = useState(month);
+  const [fromDate, setFromDate] = useState(() => `${year}-${String(month).padStart(2, '0')}-01`);
+  const [toDate, setToDate] = useState(() => toYMD(new Date(year, month, 0)));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -102,7 +116,8 @@ export function GroupDialog({ open, onOpenChange, year, month }: {
       setName(''); setColor('#8b5cf6'); setMode('individual');
       setPickYear(year); setPickMonth(month);
       setSelected(new Set());
-      setFromY(year); setFromM(month); setToY(year); setToM(month);
+      setFromDate(`${year}-${String(month).padStart(2, '0')}-01`);
+      setToDate(toYMD(new Date(year, month, 0)));
       setError('');
     }
   }, [open, year, month]);
@@ -124,7 +139,7 @@ export function GroupDialog({ open, onOpenChange, year, month }: {
         color,
         ...(mode === 'individual'
           ? { memberIds: [...selected] }
-          : { range: { fromYear: fromY, fromMonth: fromM, toYear: toY, toMonth: toM } }),
+          : { range: { fromDate, toDate } }),
       });
       invalidate();
       onOpenChange(false);
@@ -161,11 +176,17 @@ export function GroupDialog({ open, onOpenChange, year, month }: {
             </>
           ) : (
             <div className="space-y-2">
-              <div className="flex items-center gap-3">
-                <MonthYearPicker value={{ year: fromY, month: fromM }} onChange={(y, m) => { setFromY(y); setFromM(m); }} label="From" />
-                <MonthYearPicker value={{ year: toY, month: toM }} onChange={(y, m) => { setToY(y); setToM(m); }} label="To" />
+              <div className="flex items-center gap-4">
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-xs text-zinc-500 uppercase tracking-wider">From</span>
+                  <DatePicker value={fromDate} onChange={setFromDate} />
+                </div>
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-xs text-zinc-500 uppercase tracking-wider">To</span>
+                  <DatePicker value={toDate} onChange={setToDate} />
+                </div>
               </div>
-              <p className="text-xs text-zinc-500">All expense & income transactions in this month range will be added to the group.</p>
+              <p className="text-xs text-zinc-500">All expense & income transactions in this date range will be added to the group.</p>
             </div>
           )}
 
@@ -189,7 +210,7 @@ export function ManageGroupsDialog({ open, onOpenChange, year, month }: {
   month: number;
 }) {
   const invalidate = useGroupInvalidate();
-  const { data: groups = [] } = useQuery({ queryKey: ['groups'], queryFn: groupsApi.getAll, enabled: open });
+  const { data: groups = [] } = useQuery({ queryKey: ['groups'], queryFn: () => groupsApi.getAll(), enabled: open });
   const [editId, setEditId] = useState<number | null>(null);
 
   return (

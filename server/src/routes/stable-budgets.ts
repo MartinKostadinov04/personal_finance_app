@@ -1,23 +1,24 @@
 import { Router, Request, Response } from 'express';
-import { getDb } from '../db/index';
+import { query, one } from '../db/pg';
 
 const router = Router();
 
-// GET /api/stable-budgets — all stable (cross-month) budget rows, joined with category info.
-router.get('/', (_req: Request, res: Response) => {
-  const db = getDb();
-  const rows = db.prepare(`
+// GET /api/stable-budgets — all stable (cross-month) budget rows for the user.
+router.get('/', async (req: Request, res: Response) => {
+  const userId = req.userId!;
+  const rows = await query(`
     SELECT sb.id, sb.category_id, sb.planned, sb.is_active,
            c.display_name, c.name as category_name, c.type as category_type, c.color
     FROM stable_budgets sb
     JOIN categories c ON sb.category_id = c.id
-  `).all();
+    WHERE sb.user_id = $1
+  `, [userId]);
   res.json(rows);
 });
 
 // PUT /api/stable-budgets — upsert by category_id.
-router.put('/', (req: Request, res: Response) => {
-  const db = getDb();
+router.put('/', async (req: Request, res: Response) => {
+  const userId = req.userId!;
   const { category_id, planned, is_active } = req.body as {
     category_id: number; planned: number; is_active?: 0 | 1 | boolean;
   };
@@ -29,23 +30,23 @@ router.put('/', (req: Request, res: Response) => {
 
   const active = is_active === undefined ? 1 : (is_active ? 1 : 0);
 
-  db.prepare(`
-    INSERT INTO stable_budgets (category_id, planned, is_active)
-    VALUES (?, ?, ?)
-    ON CONFLICT(category_id) DO UPDATE SET
-      planned   = excluded.planned,
-      is_active = excluded.is_active
-  `).run(category_id, planned, active);
+  await query(`
+    INSERT INTO stable_budgets (user_id, category_id, planned, is_active)
+    VALUES ($1, $2, $3, $4)
+    ON CONFLICT (user_id, category_id) DO UPDATE SET
+      planned   = EXCLUDED.planned,
+      is_active = EXCLUDED.is_active
+  `, [userId, category_id, planned, active]);
 
-  const row = db.prepare('SELECT * FROM stable_budgets WHERE category_id = ?').get(category_id);
+  const row = await one('SELECT * FROM stable_budgets WHERE category_id = $1 AND user_id = $2', [category_id, userId]);
   res.json(row);
 });
 
 // DELETE /api/stable-budgets/:categoryId
-router.delete('/:categoryId', (req: Request, res: Response) => {
-  const db = getDb();
+router.delete('/:categoryId', async (req: Request, res: Response) => {
+  const userId = req.userId!;
   const categoryId = parseInt(req.params.categoryId);
-  db.prepare('DELETE FROM stable_budgets WHERE category_id = ?').run(categoryId);
+  await query('DELETE FROM stable_budgets WHERE category_id = $1 AND user_id = $2', [categoryId, userId]);
   res.json({ success: true });
 });
 

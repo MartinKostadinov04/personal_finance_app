@@ -1,8 +1,17 @@
-import type { Category, Month, Transaction, Budget, StableBudget, MonthlySummaryData, ParsedTransaction, Group } from './types';
+import type { Category, Month, Transaction, Budget, StableBudget, MonthlySummaryData, ParsedTransaction, Group, Bill, BillDetail, BillParticipant, BillExpense, Settlement, ExpenseInput } from './types';
+import { supabase } from './supabase';
+
+// Attach the current Supabase access token so the API can authenticate the user.
+async function authHeader(): Promise<Record<string, string>> {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 async function apiFetch<T>(url: string, options?: RequestInit): Promise<T> {
+  const auth = await authHeader();
   const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    headers: { 'Content-Type': 'application/json', ...auth, ...options?.headers },
     ...options,
   });
   if (!res.ok) {
@@ -75,7 +84,7 @@ export const importApi = {
     const form = new FormData();
     form.append('file', file);
     form.append('bank', bank);
-    const res = await fetch('/api/import/parse', { method: 'POST', body: form });
+    const res = await fetch('/api/import/parse', { method: 'POST', body: form, headers: await authHeader() });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: res.statusText }));
       throw new Error(err.error ?? `HTTP ${res.status}`);
@@ -87,12 +96,20 @@ export const importApi = {
       method: 'POST',
       body: JSON.stringify({ transactions, year, month }),
     }),
-  confirm: (transactions: ParsedTransaction[], year: number, month: number) =>
-    apiFetch<{ imported: number; skipped: number }>('/api/import/confirm', {
+  confirm: (transactions: ParsedTransaction[], year: number, month: number, groups?: ImportGroupAssignment[]) =>
+    apiFetch<{ imported: number; skipped: number; groupsCreated?: number }>('/api/import/confirm', {
       method: 'POST',
-      body: JSON.stringify({ transactions, year, month }),
+      body: JSON.stringify({ transactions, year, month, groups }),
     }),
 };
+
+// Group memberships staged during import preview; rowIndices reference positions
+// in the submitted `transactions` array. Either targets an existing group or creates one.
+export interface ImportGroupAssignment {
+  existingGroupId?: number;
+  newGroup?: { name: string; color: string };
+  rowIndices: number[];
+}
 
 export type ExportSection = 'transactions' | 'dashboard' | 'analytics';
 export type ExportFormat = 'xlsx' | 'pdf';
@@ -110,7 +127,7 @@ export const exportApi = {
   download: async (opts: ExportOptions) => {
     const res = await fetch('/api/export', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(await authHeader()) },
       body: JSON.stringify(opts),
     });
     if (!res.ok) {
@@ -144,12 +161,13 @@ export const merchantRulesApi = {
 };
 
 export const groupsApi = {
-  getAll: () => apiFetch<Group[]>('/api/groups'),
+  getAll: (opts?: { since?: string }) =>
+    apiFetch<Group[]>(`/api/groups${opts?.since ? `?since=${encodeURIComponent(opts.since)}` : ''}`),
   create: (data: {
     name: string;
     color?: string;
     memberIds?: number[];
-    range?: { fromYear: number; fromMonth: number; toYear: number; toMonth: number };
+    range?: { fromDate: string; toDate: string };
   }) => apiFetch<Group>('/api/groups', { method: 'POST', body: JSON.stringify(data) }),
   update: (id: number, data: { name?: string; color?: string }) =>
     apiFetch<Group>(`/api/groups/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
@@ -191,4 +209,43 @@ export const analyticsApi = {
     apiFetch<{ current: DailyPoint[]; previous: DailyPoint[] }>(
       `/api/analytics/daily?year=${year}&month=${month}`
     ),
+};
+
+export const billsApi = {
+  getAll: () => apiFetch<Bill[]>('/api/bills'),
+  get: (id: number) => apiFetch<BillDetail>(`/api/bills/${id}`),
+  create: (data: { name: string; myDisplayName: string; others: { display_name: string; email?: string }[] }) =>
+    apiFetch<Bill & { participants: BillParticipant[] }>('/api/bills', { method: 'POST', body: JSON.stringify(data) }),
+  rename: (id: number, name: string) =>
+    apiFetch<Bill>(`/api/bills/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+  remove: (id: number) =>
+    apiFetch<{ success: boolean }>(`/api/bills/${id}`, { method: 'DELETE' }),
+  close: (id: number) => apiFetch<Bill>(`/api/bills/${id}/close`, { method: 'POST' }),
+  reopen: (id: number) => apiFetch<Bill>(`/api/bills/${id}/reopen`, { method: 'POST' }),
+  addParticipant: (id: number, data: { display_name: string; email?: string }) =>
+    apiFetch<BillParticipant>(`/api/bills/${id}/participants`, { method: 'POST', body: JSON.stringify(data) }),
+  updateParticipant: (id: number, pid: number, data: { display_name?: string; covered_by_participant_id?: number | null; settled?: boolean }) =>
+    apiFetch<BillParticipant>(`/api/bills/${id}/participants/${pid}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  removeParticipant: (id: number, pid: number) =>
+    apiFetch<{ success: boolean }>(`/api/bills/${id}/participants/${pid}`, { method: 'DELETE' }),
+  addExpense: (id: number, data: ExpenseInput) =>
+    apiFetch<{ expense: BillExpense; bill: BillDetail }>(`/api/bills/${id}/expenses`, { method: 'POST', body: JSON.stringify(data) }),
+  updateExpense: (id: number, eid: number, data: ExpenseInput) =>
+    apiFetch<{ bill: BillDetail }>(`/api/bills/${id}/expenses/${eid}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  removeExpense: (id: number, eid: number) =>
+    apiFetch<{ success: boolean }>(`/api/bills/${id}/expenses/${eid}`, { method: 'DELETE' }),
+  settlement: (id: number) => apiFetch<Settlement>(`/api/bills/${id}/settlement`),
+  pushToFinance: (id: number, data?: { category_id?: number }) =>
+    apiFetch<{ group: Group; transaction: Transaction }>(`/api/bills/${id}/push-to-finance`, { method: 'POST', body: JSON.stringify(data ?? {}) }),
+  uploadReceipt: async (id: number, eid: number, file: File): Promise<{ receipt_path: string }> => {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await fetch(`/api/bills/${id}/expenses/${eid}/receipt`, { method: 'POST', body: form, headers: await authHeader() });
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(e.error ?? `HTTP ${res.status}`);
+    }
+    return res.json();
+  },
+  receiptUrl: (id: number, eid: number) => apiFetch<{ url: string }>(`/api/bills/${id}/expenses/${eid}/receipt`),
 };

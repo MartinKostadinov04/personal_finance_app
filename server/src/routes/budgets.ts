@@ -1,11 +1,11 @@
 import { Router, Request, Response } from 'express';
-import { getDb } from '../db/index';
+import { query, one, withTx } from '../db/pg';
 import { Month } from '../types';
 
 const router = Router();
 
-router.get('/', (req: Request, res: Response) => {
-  const db = getDb();
+router.get('/', async (req: Request, res: Response) => {
+  const userId = req.userId!;
   const { monthId } = req.query as { monthId?: string };
 
   if (!monthId) {
@@ -13,19 +13,19 @@ router.get('/', (req: Request, res: Response) => {
     return;
   }
 
-  const budgets = db.prepare(`
+  const budgets = await query(`
     SELECT b.id, b.month_id, b.category_id, b.planned, b.is_active,
            c.display_name, c.name as category_name, c.type as category_type, c.color
     FROM budgets b
     JOIN categories c ON b.category_id = c.id
-    WHERE b.month_id = ?
-  `).all(parseInt(monthId));
+    WHERE b.month_id = $1 AND b.user_id = $2
+  `, [parseInt(monthId), userId]);
 
   res.json(budgets);
 });
 
-router.put('/', (req: Request, res: Response) => {
-  const db = getDb();
+router.put('/', async (req: Request, res: Response) => {
+  const userId = req.userId!;
   const { month_id, category_id, planned, is_active } = req.body as {
     month_id: number; category_id: number; planned: number; is_active?: 0 | 1 | boolean;
   };
@@ -37,20 +37,20 @@ router.put('/', (req: Request, res: Response) => {
 
   const active = is_active === undefined ? 1 : (is_active ? 1 : 0);
 
-  db.prepare(`
-    INSERT INTO budgets (month_id, category_id, planned, is_active)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(month_id, category_id) DO UPDATE SET
-      planned   = excluded.planned,
-      is_active = excluded.is_active
-  `).run(month_id, category_id, planned, active);
+  await query(`
+    INSERT INTO budgets (user_id, month_id, category_id, planned, is_active)
+    VALUES ($1, $2, $3, $4, $5)
+    ON CONFLICT (month_id, category_id) DO UPDATE SET
+      planned   = EXCLUDED.planned,
+      is_active = EXCLUDED.is_active
+  `, [userId, month_id, category_id, planned, active]);
 
-  const budget = db.prepare('SELECT * FROM budgets WHERE month_id = ? AND category_id = ?').get(month_id, category_id);
+  const budget = await one('SELECT * FROM budgets WHERE month_id = $1 AND category_id = $2 AND user_id = $3', [month_id, category_id, userId]);
   res.json(budget);
 });
 
-router.post('/copy-from-previous', (req: Request, res: Response) => {
-  const db = getDb();
+router.post('/copy-from-previous', async (req: Request, res: Response) => {
+  const userId = req.userId!;
   const { month_id } = req.body as { month_id: number };
 
   if (!month_id) {
@@ -58,7 +58,7 @@ router.post('/copy-from-previous', (req: Request, res: Response) => {
     return;
   }
 
-  const currentMonth = db.prepare('SELECT * FROM months WHERE id = ?').get(month_id) as Month | undefined;
+  const currentMonth = await one<Month>('SELECT * FROM months WHERE id = $1 AND user_id = $2', [month_id, userId]);
   if (!currentMonth) {
     res.status(404).json({ error: 'Month not found' });
     return;
@@ -66,30 +66,29 @@ router.post('/copy-from-previous', (req: Request, res: Response) => {
 
   const prevYear = currentMonth.month === 1 ? currentMonth.year - 1 : currentMonth.year;
   const prevMonth = currentMonth.month === 1 ? 12 : currentMonth.month - 1;
-  const prevRecord = db.prepare('SELECT * FROM months WHERE year = ? AND month = ?').get(prevYear, prevMonth) as Month | undefined;
+  const prevRecord = await one<Month>('SELECT * FROM months WHERE year = $1 AND month = $2 AND user_id = $3', [prevYear, prevMonth, userId]);
 
   if (!prevRecord) {
     res.status(404).json({ error: 'No previous month found' });
     return;
   }
 
-  const prevBudgets = db.prepare('SELECT * FROM budgets WHERE month_id = ?').all(prevRecord.id) as Array<{ category_id: number; planned: number; is_active: number }>;
+  const prevBudgets = await query<{ category_id: number; planned: number; is_active: number }>(
+    'SELECT * FROM budgets WHERE month_id = $1 AND user_id = $2', [prevRecord.id, userId],
+  );
 
-  const upsert = db.prepare(`
-    INSERT INTO budgets (month_id, category_id, planned, is_active)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(month_id, category_id) DO UPDATE SET
-      planned   = excluded.planned,
-      is_active = excluded.is_active
-  `);
-
-  const copyAll = db.transaction(() => {
+  await withTx(async (client) => {
     for (const b of prevBudgets) {
-      upsert.run(month_id, b.category_id, b.planned, b.is_active ?? 1);
+      await client.query(`
+        INSERT INTO budgets (user_id, month_id, category_id, planned, is_active)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (month_id, category_id) DO UPDATE SET
+          planned   = EXCLUDED.planned,
+          is_active = EXCLUDED.is_active
+      `, [userId, month_id, b.category_id, b.planned, b.is_active ?? 1]);
     }
   });
 
-  copyAll();
   res.json({ copied: prevBudgets.length });
 });
 

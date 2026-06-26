@@ -5,6 +5,9 @@ import path from 'path';
 export default defineConfig({
   plugins: [react()],
   resolve: {
+    // Always resolve a single copy of React, even if a duplicate exists in a
+    // nested workspace node_modules — otherwise hooks throw "null dispatcher".
+    dedupe: ['react', 'react-dom'],
     alias: {
       '@': path.resolve(__dirname, './src'),
     },
