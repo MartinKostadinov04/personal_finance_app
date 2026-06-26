@@ -3,6 +3,7 @@ import multer from 'multer';
 import { query, one, withTx } from '../db/pg';
 import { resolveMonthId } from '../db/months';
 import { uploadReceipt, signedReceiptUrl } from '../lib/storage';
+import { getSupabaseAdmin } from '../lib/supabaseAdmin';
 import {
   computeSettlement,
   SettlementParticipant,
@@ -29,6 +30,47 @@ async function membership(billId: number, userId: string): Promise<BillParticipa
   return (await one<BillParticipant>(
     'SELECT * FROM bill_participants WHERE bill_id = $1 AND user_id = $2', [billId, userId],
   )) ?? null;
+}
+
+// A closed bill is frozen: its expenses can't be changed (settling up still can).
+async function billIsOpen(billId: number): Promise<boolean> {
+  const b = await one<{ status: string }>('SELECT status FROM bills WHERE id = $1', [billId]);
+  return b?.status === 'open';
+}
+const CLOSED_MSG = 'This bill is closed — reopen it to change expenses.';
+
+interface ResolvedInvitee {
+  user_id: string | null;
+  status: 'active' | 'invited';
+}
+
+// Turn a guest email into a participant seat. If an account already exists we
+// link to it directly (active when confirmed, invited otherwise); if not, we
+// send a Supabase invite email and link the freshly-created pending user.
+// Never throws — if the lookup/invite fails (e.g. SMTP not configured), the
+// caller still gets an 'invited' seat with a null user_id, and the per-request
+// linker in provision.ts will claim it when that person eventually signs in.
+async function resolveInvitee(email: string): Promise<ResolvedInvitee> {
+  const clean = email.trim().toLowerCase();
+  try {
+    const existing = await one<{ id: string; confirmed: boolean }>(
+      'SELECT id, (email_confirmed_at IS NOT NULL) AS confirmed FROM auth.users WHERE lower(email) = $1',
+      [clean],
+    );
+    if (existing) {
+      return { user_id: existing.id, status: existing.confirmed ? 'active' : 'invited' };
+    }
+    const redirectTo = process.env.APP_URL || undefined;
+    const { data, error } = await getSupabaseAdmin().auth.admin.inviteUserByEmail(clean, { redirectTo });
+    if (error) {
+      console.error(`inviteUserByEmail failed for ${clean}:`, error.message);
+      return { user_id: null, status: 'invited' };
+    }
+    return { user_id: data.user?.id ?? null, status: 'invited' };
+  } catch (e) {
+    console.error(`resolveInvitee failed for ${clean}:`, e);
+    return { user_id: null, status: 'invited' };
+  }
 }
 
 // Load a bill's participants + expenses (with payers and splits) in one place.
@@ -106,6 +148,14 @@ router.post('/', async (req: Request, res: Response) => {
     return;
   }
 
+  // Resolve invitee identities (link existing user / send invite) outside the
+  // transaction — inviteUserByEmail is a network call and must not hold a tx open.
+  const resolved = await Promise.all(cleanOthers.map(async (o) => {
+    const e = o.email?.trim();
+    const r: ResolvedInvitee = e ? await resolveInvitee(e) : { user_id: null, status: 'active' };
+    return { display_name: o.display_name!.trim(), email: e ?? null, user_id: r.user_id, status: r.status };
+  }));
+
   const created = await withTx(async (client) => {
     const bill = (await client.query<Bill>(
       'INSERT INTO bills (name, created_by) VALUES ($1, $2) RETURNING *', [name.trim(), userId],
@@ -116,11 +166,11 @@ router.post('/', async (req: Request, res: Response) => {
        VALUES ($1, $2, $3, $4, 'owner', 'active')`,
       [bill.id, userId, email, myDisplayName.trim()],
     );
-    for (const o of cleanOthers) {
+    for (const o of resolved) {
       await client.query(
-        `INSERT INTO bill_participants (bill_id, email, display_name, role, status)
-         VALUES ($1, $2, $3, 'member', $4)`,
-        [bill.id, o.email?.trim() ?? null, o.display_name!.trim(), o.email?.trim() ? 'invited' : 'active'],
+        `INSERT INTO bill_participants (bill_id, user_id, email, display_name, role, status)
+         VALUES ($1, $2, $3, $4, 'member', $5)`,
+        [bill.id, o.user_id, o.email, o.display_name, o.status],
       );
     }
 
@@ -198,10 +248,12 @@ router.post('/:id/participants', async (req: Request, res: Response) => {
   const { display_name, email } = req.body as { display_name?: string; email?: string };
   if (!display_name?.trim()) { res.status(400).json({ error: 'display_name is required' }); return; }
 
+  const e = email?.trim();
+  const r: ResolvedInvitee = e ? await resolveInvitee(e) : { user_id: null, status: 'active' };
   const created = await one<BillParticipant>(
-    `INSERT INTO bill_participants (bill_id, email, display_name, role, status)
-     VALUES ($1, $2, $3, 'member', $4) RETURNING *`,
-    [billId, email?.trim() ?? null, display_name.trim(), email?.trim() ? 'invited' : 'active'],
+    `INSERT INTO bill_participants (bill_id, user_id, email, display_name, role, status)
+     VALUES ($1, $2, $3, $4, 'member', $5) RETURNING *`,
+    [billId, r.user_id, e ?? null, display_name.trim(), r.status],
   );
   res.status(201).json(created);
 });
@@ -298,6 +350,7 @@ router.post('/:id/expenses', async (req: Request, res: Response) => {
   const userId = req.userId!;
   const billId = parseInt(req.params.id);
   if (!(await membership(billId, userId))) { res.status(404).json({ error: 'Bill not found' }); return; }
+  if (!(await billIsOpen(billId))) { res.status(409).json({ error: CLOSED_MSG }); return; }
 
   const body = req.body as ExpenseBody;
   const participants = await query<{ id: number }>('SELECT id FROM bill_participants WHERE bill_id = $1', [billId]);
@@ -324,6 +377,7 @@ router.patch('/:id/expenses/:eid', async (req: Request, res: Response) => {
   const billId = parseInt(req.params.id);
   const eid = parseInt(req.params.eid);
   if (!(await membership(billId, userId))) { res.status(404).json({ error: 'Bill not found' }); return; }
+  if (!(await billIsOpen(billId))) { res.status(409).json({ error: CLOSED_MSG }); return; }
 
   const exists = await one('SELECT id FROM bill_expenses WHERE id = $1 AND bill_id = $2', [eid, billId]);
   if (!exists) { res.status(404).json({ error: 'Expense not found' }); return; }
@@ -353,6 +407,7 @@ router.delete('/:id/expenses/:eid', async (req: Request, res: Response) => {
   const billId = parseInt(req.params.id);
   const eid = parseInt(req.params.eid);
   if (!(await membership(billId, userId))) { res.status(404).json({ error: 'Bill not found' }); return; }
+  if (!(await billIsOpen(billId))) { res.status(409).json({ error: CLOSED_MSG }); return; }
   await query('DELETE FROM bill_expenses WHERE id = $1 AND bill_id = $2', [eid, billId]);
   res.json({ success: true });
 });
@@ -395,6 +450,11 @@ router.post('/:id/push-to-finance', async (req: Request, res: Response) => {
   const monthId = await resolveMonthId(userId, now.getFullYear(), now.getMonth() + 1);
 
   const out = await withTx(async (client) => {
+    // Lock the caller's seat so concurrent pushes can't each create a transaction.
+    const seat = (await client.query<{ pushed_transaction_id: number | null }>(
+      'SELECT pushed_transaction_id FROM bill_participants WHERE id = $1 FOR UPDATE', [me.id],
+    )).rows[0];
+
     // Reuse an existing group with the bill's name, else create one with a random color.
     let group = (await client.query('SELECT * FROM groups WHERE user_id = $1 AND name = $2', [userId, detail.bill.name])).rows[0];
     if (!group) {
@@ -403,15 +463,32 @@ router.post('/:id/push-to-finance', async (req: Request, res: Response) => {
         [userId, detail.bill.name, randomColor()],
       )).rows[0];
     }
-    const tx = (await client.query(
-      `INSERT INTO transactions (user_id, month_id, date, amount, description, raw_description, type, category_id, bank, manually_reviewed, group_id)
-       VALUES ($1, $2, $3, $4, $5, $5, 'expense', $6, 'manual', 1, $7) RETURNING *`,
-      [userId, monthId, toYMD(now), myCost, detail.bill.name, category_id ?? null, group.id],
-    )).rows[0];
-    return { group, transaction: tx };
+
+    // If we've pushed before and that transaction still exists, update it in place
+    // (the total may have changed as expenses were added); otherwise create it.
+    let tx;
+    let updated = false;
+    if (seat?.pushed_transaction_id) {
+      tx = (await client.query(
+        `UPDATE transactions
+           SET month_id = $1, date = $2, amount = $3, description = $4, raw_description = $4, group_id = $5
+         WHERE id = $6 AND user_id = $7 RETURNING *`,
+        [monthId, toYMD(now), myCost, detail.bill.name, group.id, seat.pushed_transaction_id, userId],
+      )).rows[0];
+      updated = !!tx;
+    }
+    if (!tx) {
+      tx = (await client.query(
+        `INSERT INTO transactions (user_id, month_id, date, amount, description, raw_description, type, category_id, bank, manually_reviewed, group_id)
+         VALUES ($1, $2, $3, $4, $5, $5, 'expense', $6, 'manual', 1, $7) RETURNING *`,
+        [userId, monthId, toYMD(now), myCost, detail.bill.name, category_id ?? null, group.id],
+      )).rows[0];
+      await client.query('UPDATE bill_participants SET pushed_transaction_id = $1 WHERE id = $2', [tx.id, me.id]);
+    }
+    return { group, transaction: tx, updated };
   });
 
-  res.status(201).json(out);
+  res.status(out.updated ? 200 : 201).json(out);
 });
 
 /* ─── Receipts ─── */
@@ -422,6 +499,7 @@ router.post('/:id/expenses/:eid/receipt', upload.single('file'), async (req: Req
   const billId = parseInt(req.params.id);
   const eid = parseInt(req.params.eid);
   if (!(await membership(billId, userId))) { res.status(404).json({ error: 'Bill not found' }); return; }
+  if (!(await billIsOpen(billId))) { res.status(409).json({ error: CLOSED_MSG }); return; }
   if (!req.file) { res.status(400).json({ error: 'No file uploaded' }); return; }
 
   const exists = await one('SELECT id FROM bill_expenses WHERE id = $1 AND bill_id = $2', [eid, billId]);

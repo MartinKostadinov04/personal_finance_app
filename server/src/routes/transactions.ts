@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { query, one } from '../db/pg';
 import { resolveMonthId } from '../db/months';
+import { userOwnsMonth, userOwnsCategory } from '../db/ownership';
 import { Transaction } from '../types';
 
 const router = Router();
@@ -16,8 +17,8 @@ router.get('/', async (req: Request, res: Response) => {
     SELECT t.*, c.display_name as category_display_name, c.color as category_color, c.name as category_name,
            g.name as group_name, g.color as group_color
     FROM transactions t
-    LEFT JOIN categories c ON t.category_id = c.id
-    LEFT JOIN groups g ON t.group_id = g.id
+    LEFT JOIN categories c ON t.category_id = c.id AND c.user_id = t.user_id
+    LEFT JOIN groups g ON t.group_id = g.id AND g.user_id = t.user_id
     WHERE t.user_id = ${p(userId)}
   `;
 
@@ -59,6 +60,16 @@ router.post('/', async (req: Request, res: Response) => {
     return;
   }
 
+  // Confirm the client-supplied foreign keys belong to this user before attaching.
+  if (!(await userOwnsMonth(userId, month_id))) {
+    res.status(404).json({ error: 'Month not found' });
+    return;
+  }
+  if (category_id != null && !(await userOwnsCategory(userId, category_id))) {
+    res.status(404).json({ error: 'Category not found' });
+    return;
+  }
+
   // raw_description = description for manual entries so merchant rules and
   // duplicate detection (which key on raw_description) work on them too.
   const created = await one(
@@ -78,6 +89,11 @@ router.put('/:id', async (req: Request, res: Response) => {
   // Explicit presence flag for category_id: distinguish "not provided" (keep) from
   // "explicitly null" (clear).
   const hasCategoryId = 'category_id' in req.body;
+
+  if (hasCategoryId && category_id != null && !(await userOwnsCategory(userId, category_id))) {
+    res.status(404).json({ error: 'Category not found' });
+    return;
+  }
 
   const targetMonthId: number | null = (targetYear != null && targetMonth != null)
     ? await resolveMonthId(userId, targetYear, targetMonth)

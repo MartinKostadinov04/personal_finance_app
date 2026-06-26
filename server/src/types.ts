@@ -111,6 +111,7 @@ export interface BillParticipant {
   covered_by_participant_id: number | null;
   settled: boolean;
   settled_at: string | null;
+  pushed_transaction_id: number | null;
   created_at: string;
 }
 

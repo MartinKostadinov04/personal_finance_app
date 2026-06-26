@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { query, one, withTx } from '../db/pg';
+import { userOwnsMonth, userOwnsCategory } from '../db/ownership';
 import { Month } from '../types';
 
 const router = Router();
@@ -32,6 +33,17 @@ router.put('/', async (req: Request, res: Response) => {
 
   if (!month_id || !category_id || planned === undefined) {
     res.status(400).json({ error: 'month_id, category_id, and planned are required' });
+    return;
+  }
+
+  // Validate ownership of both FKs: the budgets unique key is (month_id, category_id),
+  // so an unvalidated foreign month_id could overwrite another user's budget via upsert.
+  if (!(await userOwnsMonth(userId, month_id))) {
+    res.status(404).json({ error: 'Month not found' });
+    return;
+  }
+  if (!(await userOwnsCategory(userId, category_id))) {
+    res.status(404).json({ error: 'Category not found' });
     return;
   }
 

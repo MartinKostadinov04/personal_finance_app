@@ -151,6 +151,9 @@ export interface BillParticipant {
   covered_by_participant_id: number | null;
   settled: boolean;
   settled_at: string | null;
+  // Set once this seat's holder has pushed their total into their finance app;
+  // a re-push updates that transaction instead of creating a duplicate.
+  pushed_transaction_id: number | null;
   created_at: string;
 }
 

@@ -20,7 +20,7 @@ router.get('/', async (req: Request, res: Response) => {
   const groups = await query(`
     SELECT g.*, COUNT(t.id) as member_count, MAX(t.date) as last_used
     FROM groups g
-    LEFT JOIN transactions t ON t.group_id = g.id
+    LEFT JOIN transactions t ON t.group_id = g.id AND t.user_id = g.user_id
     WHERE g.user_id = $1
     GROUP BY g.id
     ${since ? 'HAVING MAX(t.date) >= $2' : ''}
@@ -70,7 +70,7 @@ router.post('/', async (req: Request, res: Response) => {
       const r = await client.query(`
         SELECT g.*, COUNT(t.id) as member_count
         FROM groups g
-        LEFT JOIN transactions t ON t.group_id = g.id
+        LEFT JOIN transactions t ON t.group_id = g.id AND t.user_id = g.user_id
         WHERE g.id = $1
         GROUP BY g.id
       `, [groupId]);

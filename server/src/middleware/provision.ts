@@ -1,28 +1,36 @@
 import { Request, Response, NextFunction } from 'express';
+import { query } from '../db/pg';
 import { seedCategories } from '../db/seed';
 import { resolveMonthId } from '../db/months';
 
 // Tracks users already provisioned this process lifetime, so we only hit the DB
-// for the check once per user. (A fresh process re-checks, but seedCategories is
-// a no-op when the user already has categories, so it stays correct.)
+// for the finance defaults once per user.
 const provisioned = new Set<string>();
 
-/** Ensure a newly-authenticated user has default categories + the current month. */
+/**
+ * Ensure a newly-authenticated user has default categories + the current month,
+ * and claim any Bill Splitting seats that were invited to their email.
+ */
 export async function ensureProvisioned(req: Request, res: Response, next: NextFunction): Promise<void> {
   const userId = req.userId;
   if (!userId) {
     res.status(401).json({ error: 'Unauthenticated' });
     return;
   }
-  if (provisioned.has(userId)) {
-    next();
-    return;
-  }
   try {
-    await seedCategories(userId);
-    const now = new Date();
-    await resolveMonthId(userId, now.getFullYear(), now.getMonth() + 1);
-    provisioned.add(userId);
+    if (!provisioned.has(userId)) {
+      await seedCategories(userId);
+      const now = new Date();
+      await resolveMonthId(userId, now.getFullYear(), now.getMonth() + 1);
+      provisioned.add(userId);
+    }
+    // Link any bill participant seats invited to this email to the now-known user.
+    if (req.userEmail) {
+      await query(
+        "UPDATE bill_participants SET user_id = $1, status = 'active' WHERE user_id IS NULL AND lower(email) = lower($2)",
+        [userId, req.userEmail],
+      );
+    }
     next();
   } catch (e) {
     console.error('Provisioning failed:', e);

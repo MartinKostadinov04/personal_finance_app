@@ -236,7 +236,7 @@ export const billsApi = {
     apiFetch<{ success: boolean }>(`/api/bills/${id}/expenses/${eid}`, { method: 'DELETE' }),
   settlement: (id: number) => apiFetch<Settlement>(`/api/bills/${id}/settlement`),
   pushToFinance: (id: number, data?: { category_id?: number }) =>
-    apiFetch<{ group: Group; transaction: Transaction }>(`/api/bills/${id}/push-to-finance`, { method: 'POST', body: JSON.stringify(data ?? {}) }),
+    apiFetch<{ group: Group; transaction: Transaction; updated: boolean }>(`/api/bills/${id}/push-to-finance`, { method: 'POST', body: JSON.stringify(data ?? {}) }),
   uploadReceipt: async (id: number, eid: number, file: File): Promise<{ receipt_path: string }> => {
     const form = new FormData();
     form.append('file', file);

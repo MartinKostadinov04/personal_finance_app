@@ -13,6 +13,7 @@ server/data/*.db-wal
 *.js.map
 .DS_Store
 .claude/
+.devrun.log
 
 # Financial data files
 *.csv

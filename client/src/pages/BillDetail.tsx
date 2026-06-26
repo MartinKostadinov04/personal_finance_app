@@ -24,6 +24,7 @@ export function BillDetail() {
   const [expenseOpen, setExpenseOpen] = useState(false);
   const [editing, setEditing] = useState<BillExpense | null>(null);
   const [newPerson, setNewPerson] = useState('');
+  const [newEmail, setNewEmail] = useState('');
   const [pushMsg, setPushMsg] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -61,13 +62,16 @@ export function BillDetail() {
     run(() => billsApi.updateParticipant(billId, pid, { covered_by_participant_id }));
   const addPerson = () => {
     if (!newPerson.trim()) return;
-    run(() => billsApi.addParticipant(billId, { display_name: newPerson.trim() })).then(() => setNewPerson(''));
+    const email = newEmail.trim();
+    run(() => billsApi.addParticipant(billId, { display_name: newPerson.trim(), email: email || undefined }))
+      .then(() => { setNewPerson(''); setNewEmail(''); });
   };
   const pushToFinance = async () => {
     setBusy(true); setPushMsg('');
     try {
       const r = await billsApi.pushToFinance(billId);
-      setPushMsg(`Added ${formatCurrency(r.transaction.amount)} to your finances under group “${r.group.name}”.`);
+      const verb = r.updated ? 'Updated' : 'Added';
+      setPushMsg(`${verb} ${formatCurrency(r.transaction.amount)} in your finances under group “${r.group.name}”.`);
       invalidate();
     } catch (e) {
       setPushMsg(e instanceof Error ? e.message : 'Push failed');
@@ -149,8 +153,17 @@ export function BillDetail() {
               const bal = settlement?.balances[p.id] ?? 0;
               return (
                 <div key={p.id} className="flex flex-wrap items-center gap-2 px-1 py-1.5 text-sm">
-                  <span className={cn('flex-1 truncate', p.settled && 'text-zinc-500 line-through')}>
-                    {p.display_name}{p.role === 'owner' && <span className="ml-1 text-[10px] text-zinc-600">(you)</span>}
+                  <span className={cn('flex min-w-0 flex-1 items-center gap-1.5', p.settled && 'text-zinc-500 line-through')}>
+                    <span className="truncate">{p.display_name}</span>
+                    {me?.id === p.id && <span className="text-[10px] text-zinc-600">(you)</span>}
+                    {p.status === 'invited' && (
+                      <span
+                        className="shrink-0 rounded bg-amber-500/15 px-1 py-0.5 text-[9px] font-medium uppercase tracking-wide text-amber-500/90"
+                        title={p.email ? `Invited — ${p.email}` : 'Invited'}
+                      >
+                        invited
+                      </span>
+                    )}
                   </span>
                   <span className={cn('w-24 text-right font-mono text-xs tabular-nums', bal > 0.005 ? 'text-emerald-500' : bal < -0.005 ? 'text-rose-400' : 'text-zinc-500')}>
                     {bal > 0.005 ? `+${formatCurrency(bal)}` : bal < -0.005 ? `−${formatCurrency(Math.abs(bal))}` : '—'}
@@ -174,8 +187,9 @@ export function BillDetail() {
                 </div>
               );
             })}
-            <div className="flex items-center gap-2 px-1 pt-1">
-              <Input placeholder="Add a person…" value={newPerson} onChange={e => setNewPerson(e.target.value)} onKeyDown={e => e.key === 'Enter' && addPerson()} className="h-7 flex-1 text-sm" />
+            <div className="flex flex-wrap items-center gap-2 px-1 pt-1">
+              <Input placeholder="Add a person…" value={newPerson} onChange={e => setNewPerson(e.target.value)} onKeyDown={e => e.key === 'Enter' && addPerson()} className="h-7 min-w-[7rem] flex-1 text-sm" />
+              <Input type="email" placeholder="email to invite (optional)" value={newEmail} onChange={e => setNewEmail(e.target.value)} onKeyDown={e => e.key === 'Enter' && addPerson()} className="h-7 min-w-[7rem] flex-1 text-sm" />
               <Button size="sm" variant="outline" className="h-7" onClick={addPerson} disabled={!newPerson.trim()}><UserPlus className="h-3.5 w-3.5" /></Button>
             </div>
           </div>
@@ -212,7 +226,7 @@ export function BillDetail() {
               <p className="text-xs text-zinc-400">Your total cost on this bill</p>
               <p className="mt-0.5 font-mono text-lg">{formatCurrency(settlement?.perPersonTotalCost[me.id] ?? 0)}</p>
               <Button className="mt-2 w-full" variant="outline" onClick={pushToFinance} disabled={busy}>
-                <Send className="h-4 w-4 mr-1.5" /> Send my total to my transactions
+                <Send className="h-4 w-4 mr-1.5" /> {me.pushed_transaction_id ? 'Update my total in my transactions' : 'Send my total to my transactions'}
               </Button>
               {pushMsg && <p className="mt-2 text-xs text-emerald-400">{pushMsg}</p>}
             </div>

@@ -22,8 +22,8 @@ export async function computeBalances(
 
   const chain = await query<{ id: number; year: number; month: number; start_balance: number; income: number; expenses: number }>(`
     SELECT m.id, m.year, m.month, m.start_balance,
-      COALESCE((SELECT SUM(amount) FROM transactions WHERE month_id = m.id AND type = 'income'),   0) AS income,
-      COALESCE((SELECT SUM(amount) FROM transactions WHERE month_id = m.id AND type = 'expense'),  0) AS expenses
+      COALESCE((SELECT SUM(amount) FROM transactions WHERE month_id = m.id AND user_id = $1 AND type = 'income'),   0) AS income,
+      COALESCE((SELECT SUM(amount) FROM transactions WHERE month_id = m.id AND user_id = $1 AND type = 'expense'),  0) AS expenses
     FROM months m
     WHERE m.user_id = $1 AND ((m.year < $2) OR (m.year = $2 AND m.month <= $3))
     ORDER BY m.year ASC, m.month ASC
@@ -83,11 +83,11 @@ router.get('/:year/:month/summary', async (req: Request, res: Response) => {
   }
 
   const income = (await one<{ total: number }>(
-    "SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE month_id = $1 AND type = 'income'", [monthRecord.id],
+    "SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE month_id = $1 AND user_id = $2 AND type = 'income'", [monthRecord.id, userId],
   ))!.total;
 
   const expenses = (await one<{ total: number }>(
-    "SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE month_id = $1 AND type = 'expense'", [monthRecord.id],
+    "SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE month_id = $1 AND user_id = $2 AND type = 'expense'", [monthRecord.id, userId],
   ))!.total;
 
   // $1 = month id (already user-scoped), $2 = user id (scopes the full category list).
@@ -95,9 +95,9 @@ router.get('/:year/:month/summary', async (req: Request, res: Response) => {
     SELECT c.id as category_id, c.name as category_name, c.display_name, c.type, c.color,
            COALESCE(SUM(t.amount), 0) as total
     FROM categories c
-    LEFT JOIN transactions t ON t.category_id = c.id AND t.month_id = $1 AND t.group_id IS NULL
+    LEFT JOIN transactions t ON t.category_id = c.id AND t.month_id = $1 AND t.user_id = $2 AND t.group_id IS NULL
     WHERE c.user_id = $2
-      AND (c.is_active = 1 OR EXISTS (SELECT 1 FROM transactions t2 WHERE t2.category_id = c.id AND t2.month_id = $1 AND t2.group_id IS NULL))
+      AND (c.is_active = 1 OR EXISTS (SELECT 1 FROM transactions t2 WHERE t2.category_id = c.id AND t2.month_id = $1 AND t2.user_id = $2 AND t2.group_id IS NULL))
     GROUP BY c.id
     UNION ALL
     SELECT CASE WHEN t.type = 'income' THEN -(g.id + 1000000) ELSE -g.id END as category_id,
@@ -105,14 +105,15 @@ router.get('/:year/:month/summary', async (req: Request, res: Response) => {
            'group:' || g.name as display_name,
            t.type as type, g.color as color, COALESCE(SUM(t.amount), 0) as total
     FROM groups g
-    JOIN transactions t ON t.group_id = g.id AND t.month_id = $1
+    JOIN transactions t ON t.group_id = g.id AND t.month_id = $1 AND t.user_id = $2
+    WHERE g.user_id = $2
     GROUP BY g.id, t.type
     UNION ALL
     SELECT CASE WHEN t.type = 'income' THEN -1000000 ELSE 0 END as category_id,
            'uncategorized' as category_name, 'Uncategorized' as display_name,
            t.type as type, '#71717a' as color, COALESCE(SUM(t.amount), 0) as total
     FROM transactions t
-    WHERE t.month_id = $1 AND t.group_id IS NULL AND t.category_id IS NULL AND t.type IN ('expense', 'income')
+    WHERE t.month_id = $1 AND t.user_id = $2 AND t.group_id IS NULL AND t.category_id IS NULL AND t.type IN ('expense', 'income')
     GROUP BY t.type
     ORDER BY type, category_name
   `, [monthRecord.id, userId]);
@@ -166,36 +167,36 @@ router.get('/:year/:month/allocation', async (req: Request, res: Response) => {
   const prevRecord = await one<Month>('SELECT * FROM months WHERE year = $1 AND month = $2 AND user_id = $3', [prevYear, prevMonth, userId]);
 
   res.json({
-    current: await computeAllocation(monthRecord.id),
-    previous: prevRecord ? await computeAllocation(prevRecord.id) : emptyAllocation,
+    current: await computeAllocation(monthRecord.id, userId),
+    previous: prevRecord ? await computeAllocation(prevRecord.id, userId) : emptyAllocation,
   });
 });
 
-// monthId is already user-scoped (a month belongs to one user), so the
-// transactions/categories joined here are implicitly the user's.
-async function computeAllocation(monthId: number) {
-  const inList = (arr: string[]) => arr.map((_, i) => `$${i + 2}`).join(', ');
+// Scoped to the user explicitly ($2) so the totals can't be polluted by another
+// tenant's rows even if a transaction were mis-attached to this month.
+async function computeAllocation(monthId: number, userId: string) {
+  const inList = (arr: string[]) => arr.map((_, i) => `$${i + 3}`).join(', ');
 
   const living_costs = (await one<{ total: number }>(`
     SELECT COALESCE(SUM(t.amount), 0) as total
     FROM transactions t
-    JOIN categories c ON t.category_id = c.id
-    WHERE t.month_id = $1 AND t.type = 'expense' AND c.name IN (${inList(LIVING_CATEGORIES)})
-  `, [monthId, ...LIVING_CATEGORIES]))!.total;
+    JOIN categories c ON t.category_id = c.id AND c.user_id = $2
+    WHERE t.month_id = $1 AND t.user_id = $2 AND t.type = 'expense' AND c.name IN (${inList(LIVING_CATEGORIES)})
+  `, [monthId, userId, ...LIVING_CATEGORIES]))!.total;
 
   const extra_costs = (await one<{ total: number }>(`
     SELECT COALESCE(SUM(t.amount), 0) as total
     FROM transactions t
-    JOIN categories c ON t.category_id = c.id
-    WHERE t.month_id = $1 AND t.type = 'expense' AND c.name IN (${inList(EXTRA_CATEGORIES)})
-  `, [monthId, ...EXTRA_CATEGORIES]))!.total;
+    JOIN categories c ON t.category_id = c.id AND c.user_id = $2
+    WHERE t.month_id = $1 AND t.user_id = $2 AND t.type = 'expense' AND c.name IN (${inList(EXTRA_CATEGORIES)})
+  `, [monthId, userId, ...EXTRA_CATEGORIES]))!.total;
 
   const allowance_f = (await one<{ total: number }>(`
     SELECT COALESCE(SUM(t.amount), 0) as total
     FROM transactions t
-    JOIN categories c ON t.category_id = c.id
-    WHERE t.month_id = $1 AND t.type = 'income' AND c.name = 'allowance_f'
-  `, [monthId]))!.total;
+    JOIN categories c ON t.category_id = c.id AND c.user_id = $2
+    WHERE t.month_id = $1 AND t.user_id = $2 AND t.type = 'income' AND c.name = 'allowance_f'
+  `, [monthId, userId]))!.total;
 
   return {
     living_costs,

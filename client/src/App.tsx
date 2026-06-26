@@ -8,6 +8,7 @@ import { ControlPanel } from '@/pages/ControlPanel';
 import { Bills } from '@/pages/Bills';
 import { BillDetail } from '@/pages/BillDetail';
 import { Login } from '@/pages/Login';
+import { SetPassword } from '@/pages/SetPassword';
 import { MobileNav } from '@/components/MobileNav';
 import { MonthProvider } from '@/contexts/MonthContext';
 import { useAuth } from '@/contexts/AuthContext';
@@ -101,7 +102,7 @@ function Sidebar() {
 }
 
 export function App() {
-  const { session, loading } = useAuth();
+  const { session, loading, needsPassword } = useAuth();
 
   if (loading) {
     return (
@@ -113,6 +114,11 @@ export function App() {
 
   if (!session) {
     return <Login />;
+  }
+
+  // Invited / password-recovery users have a session but must set a password first.
+  if (needsPassword) {
+    return <SetPassword />;
   }
 
   return (
