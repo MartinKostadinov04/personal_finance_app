@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
-import { query, one, withTx } from '../db/pg';
+import { query, one, withTx, adminQuery } from '../db/pg';
+import { parseId } from '../lib/http';
 import { resolveMonthId } from '../db/months';
 import { uploadReceipt, signedReceiptUrl } from '../lib/storage';
 import { getSupabaseAdmin } from '../lib/supabaseAdmin';
@@ -18,7 +19,7 @@ import {
 } from '../types';
 
 const router = Router();
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 const PALETTE = ['#a78bfa', '#f472b6', '#38bdf8', '#34d399', '#fbbf24', '#f87171', '#22d3ee', '#c084fc', '#4ade80', '#fb923c'];
 const randomColor = () => PALETTE[Math.floor(Math.random() * PALETTE.length)];
@@ -53,10 +54,12 @@ interface ResolvedInvitee {
 async function resolveInvitee(email: string): Promise<ResolvedInvitee> {
   const clean = email.trim().toLowerCase();
   try {
-    const existing = await one<{ id: string; confirmed: boolean }>(
+    // Must use adminQuery: `authenticated` role has no SELECT on auth.users.
+    const rows = await adminQuery<{ id: string; confirmed: boolean }>(
       'SELECT id, (email_confirmed_at IS NOT NULL) AS confirmed FROM auth.users WHERE lower(email) = $1',
       [clean],
     );
+    const existing = rows[0];
     if (existing) {
       return { user_id: existing.id, status: existing.confirmed ? 'active' : 'invited' };
     }
@@ -186,7 +189,7 @@ router.post('/', async (req: Request, res: Response) => {
 // GET /api/bills/:id — full detail.
 router.get('/:id', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const billId = parseInt(req.params.id);
+  const billId = parseId(req.params.id, 'bill id');
   if (!(await membership(billId, userId))) {
     res.status(404).json({ error: 'Bill not found' });
     return;
@@ -198,7 +201,7 @@ router.get('/:id', async (req: Request, res: Response) => {
 // PATCH /api/bills/:id — rename.
 router.patch('/:id', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const billId = parseInt(req.params.id);
+  const billId = parseId(req.params.id, 'bill id');
   if (!(await membership(billId, userId))) {
     res.status(404).json({ error: 'Bill not found' });
     return;
@@ -211,7 +214,7 @@ router.patch('/:id', async (req: Request, res: Response) => {
 // DELETE /api/bills/:id — creator only.
 router.delete('/:id', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const billId = parseInt(req.params.id);
+  const billId = parseId(req.params.id, 'bill id');
   const bill = await one<Bill>('SELECT * FROM bills WHERE id = $1', [billId]);
   if (!bill || bill.created_by !== userId) {
     res.status(403).json({ error: 'Only the creator can delete this bill' });
@@ -224,7 +227,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
 // POST /api/bills/:id/close  and  /reopen
 router.post('/:id/close', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const billId = parseInt(req.params.id);
+  const billId = parseId(req.params.id, 'bill id');
   if (!(await membership(billId, userId))) { res.status(404).json({ error: 'Bill not found' }); return; }
   const updated = await one<Bill>("UPDATE bills SET status = 'closed', closed_at = now() WHERE id = $1 RETURNING *", [billId]);
   res.json(updated);
@@ -232,7 +235,7 @@ router.post('/:id/close', async (req: Request, res: Response) => {
 
 router.post('/:id/reopen', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const billId = parseInt(req.params.id);
+  const billId = parseId(req.params.id, 'bill id');
   if (!(await membership(billId, userId))) { res.status(404).json({ error: 'Bill not found' }); return; }
   const updated = await one<Bill>("UPDATE bills SET status = 'open', closed_at = NULL WHERE id = $1 RETURNING *", [billId]);
   res.json(updated);
@@ -243,7 +246,7 @@ router.post('/:id/reopen', async (req: Request, res: Response) => {
 // POST /api/bills/:id/participants — add a person.
 router.post('/:id/participants', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const billId = parseInt(req.params.id);
+  const billId = parseId(req.params.id, 'bill id');
   if (!(await membership(billId, userId))) { res.status(404).json({ error: 'Bill not found' }); return; }
   const { display_name, email } = req.body as { display_name?: string; email?: string };
   if (!display_name?.trim()) { res.status(400).json({ error: 'display_name is required' }); return; }
@@ -261,8 +264,8 @@ router.post('/:id/participants', async (req: Request, res: Response) => {
 // PATCH /api/bills/:id/participants/:pid — rename, set bill-wide merge, mark paid.
 router.patch('/:id/participants/:pid', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const billId = parseInt(req.params.id);
-  const pid = parseInt(req.params.pid);
+  const billId = parseId(req.params.id, 'bill id');
+  const pid = parseId(req.params.pid, 'participant id');
   if (!(await membership(billId, userId))) { res.status(404).json({ error: 'Bill not found' }); return; }
 
   const body = req.body as { display_name?: string; covered_by_participant_id?: number | null; settled?: boolean };
@@ -289,8 +292,8 @@ router.patch('/:id/participants/:pid', async (req: Request, res: Response) => {
 // DELETE /api/bills/:id/participants/:pid — only if not used in any expense.
 router.delete('/:id/participants/:pid', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const billId = parseInt(req.params.id);
-  const pid = parseInt(req.params.pid);
+  const billId = parseId(req.params.id, 'bill id');
+  const pid = parseId(req.params.pid, 'participant id');
   if (!(await membership(billId, userId))) { res.status(404).json({ error: 'Bill not found' }); return; }
 
   const used = await one<{ c: number }>(`
@@ -348,7 +351,7 @@ async function insertExpenseRows(client: import('pg').PoolClient, expenseId: num
 // POST /api/bills/:id/expenses
 router.post('/:id/expenses', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const billId = parseInt(req.params.id);
+  const billId = parseId(req.params.id, 'bill id');
   if (!(await membership(billId, userId))) { res.status(404).json({ error: 'Bill not found' }); return; }
   if (!(await billIsOpen(billId))) { res.status(409).json({ error: CLOSED_MSG }); return; }
 
@@ -374,8 +377,8 @@ router.post('/:id/expenses', async (req: Request, res: Response) => {
 // PATCH /api/bills/:id/expenses/:eid — replace the expense's payers/splits.
 router.patch('/:id/expenses/:eid', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const billId = parseInt(req.params.id);
-  const eid = parseInt(req.params.eid);
+  const billId = parseId(req.params.id, 'bill id');
+  const eid = parseId(req.params.eid, 'expense id');
   if (!(await membership(billId, userId))) { res.status(404).json({ error: 'Bill not found' }); return; }
   if (!(await billIsOpen(billId))) { res.status(409).json({ error: CLOSED_MSG }); return; }
 
@@ -404,8 +407,8 @@ router.patch('/:id/expenses/:eid', async (req: Request, res: Response) => {
 // DELETE /api/bills/:id/expenses/:eid
 router.delete('/:id/expenses/:eid', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const billId = parseInt(req.params.id);
-  const eid = parseInt(req.params.eid);
+  const billId = parseId(req.params.id, 'bill id');
+  const eid = parseId(req.params.eid, 'expense id');
   if (!(await membership(billId, userId))) { res.status(404).json({ error: 'Bill not found' }); return; }
   if (!(await billIsOpen(billId))) { res.status(409).json({ error: CLOSED_MSG }); return; }
   await query('DELETE FROM bill_expenses WHERE id = $1 AND bill_id = $2', [eid, billId]);
@@ -417,7 +420,7 @@ router.delete('/:id/expenses/:eid', async (req: Request, res: Response) => {
 // GET /api/bills/:id/settlement — the who-owes-whom dashboard.
 router.get('/:id/settlement', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const billId = parseInt(req.params.id);
+  const billId = parseId(req.params.id, 'bill id');
   if (!(await membership(billId, userId))) { res.status(404).json({ error: 'Bill not found' }); return; }
 
   const detail = await loadBillDetail(billId);
@@ -432,7 +435,7 @@ router.get('/:id/settlement', async (req: Request, res: Response) => {
 // and a transaction (my total share) in the caller's finance workspace.
 router.post('/:id/push-to-finance', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const billId = parseInt(req.params.id);
+  const billId = parseId(req.params.id, 'bill id');
   const me = await membership(billId, userId);
   if (!me) { res.status(404).json({ error: 'Bill not found' }); return; }
 
@@ -496,11 +499,17 @@ router.post('/:id/push-to-finance', async (req: Request, res: Response) => {
 // POST /api/bills/:id/expenses/:eid/receipt — upload a receipt image.
 router.post('/:id/expenses/:eid/receipt', upload.single('file'), async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const billId = parseInt(req.params.id);
-  const eid = parseInt(req.params.eid);
+  const billId = parseId(req.params.id, 'bill id');
+  const eid = parseId(req.params.eid, 'expense id');
   if (!(await membership(billId, userId))) { res.status(404).json({ error: 'Bill not found' }); return; }
   if (!(await billIsOpen(billId))) { res.status(409).json({ error: CLOSED_MSG }); return; }
   if (!req.file) { res.status(400).json({ error: 'No file uploaded' }); return; }
+
+  const ALLOWED_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'application/pdf']);
+  if (!ALLOWED_MIME.has(req.file.mimetype)) {
+    res.status(415).json({ error: 'Unsupported file type' });
+    return;
+  }
 
   const exists = await one('SELECT id FROM bill_expenses WHERE id = $1 AND bill_id = $2', [eid, billId]);
   if (!exists) { res.status(404).json({ error: 'Expense not found' }); return; }
@@ -520,8 +529,8 @@ router.post('/:id/expenses/:eid/receipt', upload.single('file'), async (req: Req
 // GET /api/bills/:id/expenses/:eid/receipt — a signed view URL.
 router.get('/:id/expenses/:eid/receipt', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const billId = parseInt(req.params.id);
-  const eid = parseInt(req.params.eid);
+  const billId = parseId(req.params.id, 'bill id');
+  const eid = parseId(req.params.eid, 'expense id');
   if (!(await membership(billId, userId))) { res.status(404).json({ error: 'Bill not found' }); return; }
 
   const exp = await one<{ receipt_path: string | null }>('SELECT receipt_path FROM bill_expenses WHERE id = $1 AND bill_id = $2', [eid, billId]);

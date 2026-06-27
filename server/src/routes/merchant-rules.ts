@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { query, one } from '../db/pg';
+import { parseId } from '../lib/http';
 
 const router = Router();
 
@@ -57,7 +58,7 @@ router.post('/', async (req: Request, res: Response) => {
 // PUT /api/merchant-rules/:id — update an existing rule
 router.put('/:id', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const id = parseInt(req.params.id);
+  const id = parseId(req.params.id);
   const { pattern, category_id, description_clean, match_amount, match_type } = req.body as {
     pattern?: string;
     category_id?: number;
@@ -96,7 +97,7 @@ router.put('/:id', async (req: Request, res: Response) => {
     if (e.code === '23505') {
       res.status(409).json({ error: 'A rule with this pattern already exists' });
     } else {
-      res.status(500).json({ error: e.message ?? String(err) });
+      throw err;
     }
   }
 });
@@ -104,7 +105,7 @@ router.put('/:id', async (req: Request, res: Response) => {
 // DELETE /api/merchant-rules/:id
 router.delete('/:id', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  await query('DELETE FROM merchant_rules WHERE id = $1 AND user_id = $2', [parseInt(req.params.id), userId]);
+  await query('DELETE FROM merchant_rules WHERE id = $1 AND user_id = $2', [parseId(req.params.id), userId]);
   res.json({ success: true });
 });
 

@@ -1,12 +1,15 @@
 import './env';
+import 'express-async-errors';
 
 import express from 'express';
 import cors from 'cors';
+import rateLimit from 'express-rate-limit';
 
 import { getPool } from './db/pg';
 import { requireAuth } from './middleware/auth';
 import { ensureProvisioned } from './middleware/provision';
 import { rlsContext } from './middleware/rlsContext';
+import { errorHandler } from './middleware/errorHandler';
 
 import categoriesRouter from './routes/categories';
 import monthsRouter from './routes/months';
@@ -22,11 +25,29 @@ import billsRouter from './routes/bills';
 
 const PORT = parseInt(process.env.PORT ?? '3001');
 
+const allowedOrigins = (process.env.CORS_ORIGIN ?? 'http://localhost:5173')
+  .split(',').map(s => s.trim()).filter(Boolean);
+
+const apiLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 const app = express();
 
-app.use(cors());
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  next();
+});
+app.use(cors({ origin: allowedOrigins }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// Rate-limit all /api routes (including unauthenticated ones).
+app.use('/api', apiLimiter);
 
 // Public health check.
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
@@ -47,6 +68,9 @@ app.use('/api/analytics', analyticsRouter);
 app.use('/api/merchant-rules', merchantRulesRouter);
 app.use('/api/groups', groupsRouter);
 app.use('/api/bills', billsRouter);
+
+// Terminal error handler — must be last, after all routers.
+app.use(errorHandler);
 
 async function start() {
   // Verify DB connectivity before serving. Per-user data (categories, current

@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { query, one, withTx } from '../db/pg';
+import { parseId } from '../lib/http';
 import { Category } from '../types';
 
 const router = Router();
@@ -31,18 +32,18 @@ router.post('/', async (req: Request, res: Response) => {
     );
     res.status(201).json(created);
   } catch (err: unknown) {
-    const e = err as { code?: string; message?: string };
+    const e = err as { code?: string };
     if (e.code === '23505') {
       res.status(409).json({ error: 'Category name already exists' });
     } else {
-      res.status(500).json({ error: e.message ?? String(err) });
+      throw err;
     }
   }
 });
 
 router.put('/:id', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const id = parseInt(req.params.id);
+  const id = parseId(req.params.id);
   const { display_name, color, is_active, sort_order } = req.body as Partial<Category>;
 
   await query(
@@ -61,7 +62,7 @@ router.put('/:id', async (req: Request, res: Response) => {
 
 router.delete('/:id', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const id = parseInt(req.params.id);
+  const id = parseId(req.params.id);
 
   // Reassign the category's transactions to Uncategorized, then remove every
   // reference (budgets, stable budgets, rules) so the FK-constrained delete can

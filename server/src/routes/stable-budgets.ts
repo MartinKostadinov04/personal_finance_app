@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { query, one } from '../db/pg';
+import { parseId } from '../lib/http';
 
 const router = Router();
 
@@ -45,7 +46,7 @@ router.put('/', async (req: Request, res: Response) => {
 // DELETE /api/stable-budgets/:categoryId
 router.delete('/:categoryId', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const categoryId = parseInt(req.params.categoryId);
+  const categoryId = parseId(req.params.categoryId, 'category id');
   await query('DELETE FROM stable_budgets WHERE category_id = $1 AND user_id = $2', [categoryId, userId]);
   res.json({ success: true });
 });

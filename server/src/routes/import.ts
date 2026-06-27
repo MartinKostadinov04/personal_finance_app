@@ -10,7 +10,7 @@ import { categorize } from '../categorizer';
 import { CategorizedTransaction } from '../types';
 
 const router = Router();
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 router.post('/parse', upload.single('file'), async (req: Request, res: Response) => {
   const userId = req.userId!;
@@ -40,7 +40,7 @@ router.post('/parse', upload.single('file'), async (req: Request, res: Response)
     res.json({ transactions: categorized, count: categorized.length });
   } catch (err) {
     console.error('Parse error:', err);
-    res.status(500).json({ error: err instanceof Error ? err.message : 'Parse failed' });
+    res.status(400).json({ error: 'Could not parse file' });
   }
 });
 
@@ -160,11 +160,11 @@ router.post('/confirm', async (req: Request, res: Response) => {
 
     res.json({ imported, skipped, groupsCreated });
   } catch (err: unknown) {
-    const e = err as { code?: string; message?: string };
+    const e = err as { code?: string };
     if (e.code === '23505') {
       res.status(409).json({ error: 'A group with that name already exists' });
     } else {
-      res.status(500).json({ error: e.message ?? String(err) });
+      throw err;
     }
   }
 });

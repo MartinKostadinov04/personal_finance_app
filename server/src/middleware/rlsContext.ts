@@ -27,9 +27,9 @@ export function rlsContext(req: Request, res: Response, next: NextFunction): voi
     () =>
       new Promise<void>((resolve, reject) => {
         res.on('finish', () => {
-          // Response fully sent. Roll back on server errors so a failed handler
-          // leaves no partial writes; commit otherwise.
-          if (res.statusCode >= 500) reject(new Error(`handler responded ${res.statusCode}`));
+          // Roll back on any non-success: the whole request is one transaction,
+          // so a 4xx (bad input, auth fail, etc.) must not persist partial writes.
+          if (res.statusCode >= 400) reject(new Error(`handler responded ${res.statusCode}`));
           else resolve();
         });
         res.on('close', () => {
@@ -39,8 +39,8 @@ export function rlsContext(req: Request, res: Response, next: NextFunction): voi
         next();
       }),
   ).catch((err: unknown) => {
-    // The transaction has already rolled back, and the response was already sent
-    // (or the socket is gone), so there is nothing to return to the client here.
     console.error('rlsContext:', err instanceof Error ? err.message : err);
+    // If the DB context failed before next() was called, no response has been sent yet.
+    if (!res.headersSent) res.status(503).json({ error: 'Service temporarily unavailable' });
   });
 }

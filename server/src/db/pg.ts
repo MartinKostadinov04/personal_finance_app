@@ -117,6 +117,7 @@ export async function runWithUserContext<T>(userId: string, fn: () => Promise<T>
       JSON.stringify({ sub: userId, role: 'authenticated' }),
     ]);
     await client.query('SET LOCAL ROLE authenticated');
+    await client.query("SET LOCAL statement_timeout = '15s'");
     const result = await dbContext.run({ client, savepointSeq: 0 }, fn);
     await client.query('COMMIT');
     return result;

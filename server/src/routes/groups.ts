@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { query, one, withTx } from '../db/pg';
+import { parseId } from '../lib/http';
 
 const router = Router();
 
@@ -79,11 +80,11 @@ router.post('/', async (req: Request, res: Response) => {
 
     res.status(201).json(created);
   } catch (err: unknown) {
-    const e = err as { code?: string; message?: string };
+    const e = err as { code?: string };
     if (e.code === '23505') {
       res.status(409).json({ error: 'A group with that name already exists' });
     } else {
-      res.status(500).json({ error: e.message ?? String(err) });
+      throw err;
     }
   }
 });
@@ -91,7 +92,7 @@ router.post('/', async (req: Request, res: Response) => {
 // PATCH /api/groups/:id — rename / recolor
 router.patch('/:id', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const id = parseInt(req.params.id);
+  const id = parseId(req.params.id);
   const { name, color } = req.body as { name?: string; color?: string };
 
   try {
@@ -101,11 +102,11 @@ router.patch('/:id', async (req: Request, res: Response) => {
     );
     res.json(updated);
   } catch (err: unknown) {
-    const e = err as { code?: string; message?: string };
+    const e = err as { code?: string };
     if (e.code === '23505') {
       res.status(409).json({ error: 'A group with that name already exists' });
     } else {
-      res.status(500).json({ error: e.message ?? String(err) });
+      throw err;
     }
   }
 });
@@ -113,14 +114,14 @@ router.patch('/:id', async (req: Request, res: Response) => {
 // DELETE /api/groups/:id — FK ON DELETE SET NULL ungroups members automatically
 router.delete('/:id', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  await query('DELETE FROM groups WHERE id = $1 AND user_id = $2', [parseInt(req.params.id), userId]);
+  await query('DELETE FROM groups WHERE id = $1 AND user_id = $2', [parseId(req.params.id), userId]);
   res.json({ success: true });
 });
 
 // POST /api/groups/:id/members — add and/or remove members
 router.post('/:id/members', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const id = parseInt(req.params.id);
+  const id = parseId(req.params.id);
   const { add, remove } = req.body as { add?: number[]; remove?: number[] };
 
   await withTx(async (client) => {

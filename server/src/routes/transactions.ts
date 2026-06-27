@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { query, one } from '../db/pg';
+import { parseId, BadRequest } from '../lib/http';
 import { resolveMonthId } from '../db/months';
 import { userOwnsMonth, userOwnsCategory } from '../db/ownership';
 import { Transaction } from '../types';
@@ -83,7 +84,7 @@ router.post('/', async (req: Request, res: Response) => {
 
 router.put('/:id', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const id = parseInt(req.params.id);
+  const id = parseId(req.params.id);
   const { date, amount, description, type, category_id, bank, year: targetYear, month: targetMonth } = req.body as Partial<Transaction> & { year?: number; month?: number };
 
   // Explicit presence flag for category_id: distinguish "not provided" (keep) from
@@ -118,7 +119,7 @@ router.put('/:id', async (req: Request, res: Response) => {
 
 router.delete('/:id', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  await query('DELETE FROM transactions WHERE id = $1 AND user_id = $2', [parseInt(req.params.id), userId]);
+  await query('DELETE FROM transactions WHERE id = $1 AND user_id = $2', [parseId(req.params.id), userId]);
   res.json({ success: true });
 });
 
@@ -138,6 +139,10 @@ router.post('/bulk-categorize', async (req: Request, res: Response) => {
   if (!pattern || !category_id || !scope) {
     res.status(400).json({ error: 'pattern, category_id and scope are required' });
     return;
+  }
+
+  if (match_type === 'regex') {
+    try { new RegExp(pattern); } catch { throw new BadRequest('Invalid regular expression'); }
   }
 
   const params: unknown[] = [];
