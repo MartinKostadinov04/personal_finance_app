@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { query } from '../db/pg';
+import { adminQuery } from '../db/pg';
 import { seedCategories } from '../db/seed';
 import { resolveMonthId } from '../db/months';
 
@@ -25,8 +25,10 @@ export async function ensureProvisioned(req: Request, res: Response, next: NextF
       provisioned.add(userId);
     }
     // Link any bill participant seats invited to this email to the now-known user.
+    // Runs on the admin (BYPASSRLS) path: the caller is not yet a participant of
+    // those bills, so RLS would otherwise hide the very rows we need to claim.
     if (req.userEmail) {
-      await query(
+      await adminQuery(
         "UPDATE bill_participants SET user_id = $1, status = 'active' WHERE user_id IS NULL AND lower(email) = lower($2)",
         [userId, req.userEmail],
       );

@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import type { Pool, PoolClient } from 'pg';
-import { getPool, withTx } from '../db/pg';
+import { getDb, withTx } from '../db/pg';
 import { resolveMonthId } from '../db/months';
 import { parseRevolut } from '../parsers/revolut';
 import { parseSantander } from '../parsers/santander';
@@ -80,11 +80,11 @@ router.post('/check-duplicates', async (req: Request, res: Response) => {
   }
 
   const monthId = await resolveMonthId(userId, year, month);
-  const pool = getPool();
+  const db = getDb();
 
   const duplicates: boolean[] = [];
   for (const tx of transactions) {
-    duplicates.push(await isDuplicate(pool, userId, monthId, tx.date, tx.amount, tx.raw_description));
+    duplicates.push(await isDuplicate(db, userId, monthId, tx.date, tx.amount, tx.raw_description));
   }
 
   res.json({ duplicates });

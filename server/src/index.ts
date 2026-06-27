@@ -6,6 +6,7 @@ import cors from 'cors';
 import { getPool } from './db/pg';
 import { requireAuth } from './middleware/auth';
 import { ensureProvisioned } from './middleware/provision';
+import { rlsContext } from './middleware/rlsContext';
 
 import categoriesRouter from './routes/categories';
 import monthsRouter from './routes/months';
@@ -31,7 +32,9 @@ app.use(express.urlencoded({ extended: true }));
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
 // Everything below requires a valid token and provisions the user on first use.
-app.use('/api', requireAuth, ensureProvisioned);
+// rlsContext then runs each request as the authenticated user so RLS is enforced
+// at the database (it is mounted after provisioning, which needs the admin path).
+app.use('/api', requireAuth, ensureProvisioned, rlsContext);
 
 app.use('/api/categories', categoriesRouter);
 app.use('/api/months', monthsRouter);
