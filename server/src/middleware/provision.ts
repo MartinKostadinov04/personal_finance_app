@@ -22,16 +22,18 @@ export async function ensureProvisioned(req: Request, res: Response, next: NextF
       await seedCategories(userId);
       const now = new Date();
       await resolveMonthId(userId, now.getFullYear(), now.getMonth() + 1);
+      // Link any bill participant seats invited to this email to the now-known user.
+      // Runs on the admin (BYPASSRLS) path: the caller is not yet a participant of
+      // those bills, so RLS would otherwise hide the very rows we need to claim.
+      // Only needed once per user (and after every server restart for invited-before-
+      // signup users), so it belongs inside the first-provision guard.
+      if (req.userEmail) {
+        await adminQuery(
+          "UPDATE bill_participants SET user_id = $1, status = 'active' WHERE user_id IS NULL AND lower(email) = lower($2)",
+          [userId, req.userEmail],
+        );
+      }
       provisioned.add(userId);
-    }
-    // Link any bill participant seats invited to this email to the now-known user.
-    // Runs on the admin (BYPASSRLS) path: the caller is not yet a participant of
-    // those bills, so RLS would otherwise hide the very rows we need to claim.
-    if (req.userEmail) {
-      await adminQuery(
-        "UPDATE bill_participants SET user_id = $1, status = 'active' WHERE user_id IS NULL AND lower(email) = lower($2)",
-        [userId, req.userEmail],
-      );
     }
     next();
   } catch (e) {

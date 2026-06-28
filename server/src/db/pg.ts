@@ -31,6 +31,9 @@ export function getPool(): Pool {
       // bundle, so we don't hard-fail on verification.
       ssl: { rejectUnauthorized: false },
     });
+    pool.on('error', (err) => {
+      console.error('pg pool error (idle client):', err.message);
+    });
   }
   return pool;
 }

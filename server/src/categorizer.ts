@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { query } from './db/pg';
 import { RawTransaction, CategorizedTransaction, Category, MerchantRule } from './types';
 
-const client = new Anthropic();
+const client = new Anthropic({ timeout: 30_000, maxRetries: 1 });
 
 export async function categorize(
   transactions: RawTransaction[],

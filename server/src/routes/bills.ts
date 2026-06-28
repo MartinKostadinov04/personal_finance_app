@@ -198,14 +198,13 @@ router.get('/:id', async (req: Request, res: Response) => {
   res.json(detail);
 });
 
-// PATCH /api/bills/:id — rename.
+// PATCH /api/bills/:id — rename (owner only).
 router.patch('/:id', async (req: Request, res: Response) => {
   const userId = req.userId!;
   const billId = parseId(req.params.id, 'bill id');
-  if (!(await membership(billId, userId))) {
-    res.status(404).json({ error: 'Bill not found' });
-    return;
-  }
+  const me = await membership(billId, userId);
+  if (!me) { res.status(404).json({ error: 'Bill not found' }); return; }
+  if (me.role !== 'owner') { res.status(403).json({ error: 'Only the bill owner can do this' }); return; }
   const { name } = req.body as { name?: string };
   const updated = await one<Bill>('UPDATE bills SET name = COALESCE($1, name) WHERE id = $2 RETURNING *', [name?.trim() ?? null, billId]);
   res.json(updated);
@@ -216,19 +215,19 @@ router.delete('/:id', async (req: Request, res: Response) => {
   const userId = req.userId!;
   const billId = parseId(req.params.id, 'bill id');
   const bill = await one<Bill>('SELECT * FROM bills WHERE id = $1', [billId]);
-  if (!bill || bill.created_by !== userId) {
-    res.status(403).json({ error: 'Only the creator can delete this bill' });
-    return;
-  }
+  if (!bill) { res.status(404).json({ error: 'Bill not found' }); return; }
+  if (bill.created_by !== userId) { res.status(403).json({ error: 'Only the creator can delete this bill' }); return; }
   await query('DELETE FROM bills WHERE id = $1', [billId]);
   res.json({ success: true });
 });
 
-// POST /api/bills/:id/close  and  /reopen
+// POST /api/bills/:id/close  and  /reopen  (owner only)
 router.post('/:id/close', async (req: Request, res: Response) => {
   const userId = req.userId!;
   const billId = parseId(req.params.id, 'bill id');
-  if (!(await membership(billId, userId))) { res.status(404).json({ error: 'Bill not found' }); return; }
+  const me = await membership(billId, userId);
+  if (!me) { res.status(404).json({ error: 'Bill not found' }); return; }
+  if (me.role !== 'owner') { res.status(403).json({ error: 'Only the bill owner can do this' }); return; }
   const updated = await one<Bill>("UPDATE bills SET status = 'closed', closed_at = now() WHERE id = $1 RETURNING *", [billId]);
   res.json(updated);
 });
@@ -236,7 +235,9 @@ router.post('/:id/close', async (req: Request, res: Response) => {
 router.post('/:id/reopen', async (req: Request, res: Response) => {
   const userId = req.userId!;
   const billId = parseId(req.params.id, 'bill id');
-  if (!(await membership(billId, userId))) { res.status(404).json({ error: 'Bill not found' }); return; }
+  const me = await membership(billId, userId);
+  if (!me) { res.status(404).json({ error: 'Bill not found' }); return; }
+  if (me.role !== 'owner') { res.status(403).json({ error: 'Only the bill owner can do this' }); return; }
   const updated = await one<Bill>("UPDATE bills SET status = 'open', closed_at = NULL WHERE id = $1 RETURNING *", [billId]);
   res.json(updated);
 });
@@ -261,12 +262,14 @@ router.post('/:id/participants', async (req: Request, res: Response) => {
   res.status(201).json(created);
 });
 
-// PATCH /api/bills/:id/participants/:pid — rename, set bill-wide merge, mark paid.
+// PATCH /api/bills/:id/participants/:pid — rename, set bill-wide merge, mark paid (owner only).
 router.patch('/:id/participants/:pid', async (req: Request, res: Response) => {
   const userId = req.userId!;
   const billId = parseId(req.params.id, 'bill id');
   const pid = parseId(req.params.pid, 'participant id');
-  if (!(await membership(billId, userId))) { res.status(404).json({ error: 'Bill not found' }); return; }
+  const me = await membership(billId, userId);
+  if (!me) { res.status(404).json({ error: 'Bill not found' }); return; }
+  if (me.role !== 'owner') { res.status(403).json({ error: 'Only the bill owner can do this' }); return; }
 
   const body = req.body as { display_name?: string; covered_by_participant_id?: number | null; settled?: boolean };
   const hasCovered = 'covered_by_participant_id' in body;
@@ -391,9 +394,11 @@ router.patch('/:id/expenses/:eid', async (req: Request, res: Response) => {
   if (err) { res.status(400).json({ error: err }); return; }
 
   await withTx(async (client) => {
+    const hasReceipt = 'receipt_path' in body;
     await client.query(
-      'UPDATE bill_expenses SET name = $1, amount = $2, spent_at = COALESCE($3, spent_at), receipt_path = $4, updated_at = now() WHERE id = $5',
-      [body.name!.trim(), body.amount, body.spent_at ?? null, body.receipt_path ?? null, eid],
+      `UPDATE bill_expenses SET name = $1, amount = $2, spent_at = COALESCE($3, spent_at),
+       receipt_path = CASE WHEN $5 THEN $4::text ELSE receipt_path END, updated_at = now() WHERE id = $6`,
+      [body.name!.trim(), body.amount, body.spent_at ?? null, body.receipt_path ?? null, hasReceipt, eid],
     );
     await client.query('DELETE FROM bill_expense_payers WHERE expense_id = $1', [eid]);
     await client.query('DELETE FROM bill_expense_splits WHERE expense_id = $1', [eid]);

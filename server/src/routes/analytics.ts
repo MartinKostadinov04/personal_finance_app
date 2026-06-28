@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { query, one } from '../db/pg';
+import { parseIntStrict } from '../lib/http';
 
 const router = Router();
 
@@ -8,10 +9,10 @@ const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Se
 // GET /api/analytics/trend?fromYear=&fromMonth=&toYear=&toMonth=
 router.get('/trend', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const fy = req.query.fromYear  ? parseInt(req.query.fromYear  as string) : null;
-  const fm = req.query.fromMonth ? parseInt(req.query.fromMonth as string) : null;
-  const ty = req.query.toYear    ? parseInt(req.query.toYear    as string) : null;
-  const tm = req.query.toMonth   ? parseInt(req.query.toMonth   as string) : null;
+  const fy = req.query.fromYear  ? parseIntStrict(req.query.fromYear  as string, 'fromYear',  { min: 1970, max: 9999 }) : null;
+  const fm = req.query.fromMonth ? parseIntStrict(req.query.fromMonth as string, 'fromMonth', { min: 1, max: 12 })    : null;
+  const ty = req.query.toYear    ? parseIntStrict(req.query.toYear    as string, 'toYear',    { min: 1970, max: 9999 }) : null;
+  const tm = req.query.toMonth   ? parseIntStrict(req.query.toMonth   as string, 'toMonth',   { min: 1, max: 12 })    : null;
 
   const allMonths = await query<{ id: number; year: number; month: number }>(
     'SELECT * FROM months WHERE user_id = $1 ORDER BY year ASC, month ASC', [userId],
@@ -48,8 +49,8 @@ router.get('/trend', async (req: Request, res: Response) => {
 // GET /api/analytics/daily?year=&month=
 router.get('/daily', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const year  = parseInt(req.query.year  as string);
-  const month = parseInt(req.query.month as string);
+  const year  = parseIntStrict(req.query.year  as string, 'year',  { min: 1970, max: 9999 });
+  const month = parseIntStrict(req.query.month as string, 'month', { min: 1, max: 12 });
 
   const prevYear  = month === 1 ? year - 1 : year;
   const prevMonth = month === 1 ? 12 : month - 1;

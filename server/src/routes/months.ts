@@ -49,8 +49,8 @@ router.get('/', async (req: Request, res: Response) => {
 
 router.get('/:year/:month', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const year = parseIntStrict(req.params.year, 'year');
-  const month = parseIntStrict(req.params.month, 'month');
+  const year = parseIntStrict(req.params.year, 'year', { min: 1970, max: 9999 });
+  const month = parseIntStrict(req.params.month, 'month', { min: 1, max: 12 });
 
   const id = await resolveMonthId(userId, year, month);
   const record = await one('SELECT * FROM months WHERE id = $1', [id]);
@@ -59,8 +59,8 @@ router.get('/:year/:month', async (req: Request, res: Response) => {
 
 router.put('/:year/:month', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const year = parseIntStrict(req.params.year, 'year');
-  const month = parseIntStrict(req.params.month, 'month');
+  const year = parseIntStrict(req.params.year, 'year', { min: 1970, max: 9999 });
+  const month = parseIntStrict(req.params.month, 'month', { min: 1, max: 12 });
   const { start_balance, status } = req.body as Partial<Month>;
 
   await query(
@@ -74,8 +74,8 @@ router.put('/:year/:month', async (req: Request, res: Response) => {
 
 router.get('/:year/:month/summary', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const year = parseIntStrict(req.params.year, 'year');
-  const month = parseIntStrict(req.params.month, 'month');
+  const year = parseIntStrict(req.params.year, 'year', { min: 1970, max: 9999 });
+  const month = parseIntStrict(req.params.month, 'month', { min: 1, max: 12 });
 
   const monthRecord = await one<Month>('SELECT * FROM months WHERE year = $1 AND month = $2 AND user_id = $3', [year, month, userId]);
   if (!monthRecord) {
@@ -151,8 +151,8 @@ router.get('/:year/:month/summary', async (req: Request, res: Response) => {
 
 router.get('/:year/:month/allocation', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const year = parseIntStrict(req.params.year, 'year');
-  const month = parseIntStrict(req.params.month, 'month');
+  const year = parseIntStrict(req.params.year, 'year', { min: 1970, max: 9999 });
+  const month = parseIntStrict(req.params.month, 'month', { min: 1, max: 12 });
 
   const monthRecord = await one<Month>('SELECT * FROM months WHERE year = $1 AND month = $2 AND user_id = $3', [year, month, userId]);
 
