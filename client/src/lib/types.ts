@@ -35,6 +35,7 @@ export interface Transaction {
   group_id?: number | null;
   group_name?: string | null;
   group_color?: string | null;
+  bill_id?: number | null;
   bank: 'revolut' | 'santander' | 'fibank' | 'manual';
   manually_reviewed: number;
   created_at: string;

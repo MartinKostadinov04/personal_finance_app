@@ -16,10 +16,12 @@ router.get('/', async (req: Request, res: Response) => {
 
   let q = `
     SELECT t.*, c.display_name as category_display_name, c.color as category_color, c.name as category_name,
-           g.name as group_name, g.color as group_color
+           g.name as group_name, g.color as group_color,
+           bp.bill_id as bill_id
     FROM transactions t
     LEFT JOIN categories c ON t.category_id = c.id AND c.user_id = t.user_id
     LEFT JOIN groups g ON t.group_id = g.id AND g.user_id = t.user_id
+    LEFT JOIN bill_participants bp ON bp.pushed_transaction_id = t.id AND bp.user_id = t.user_id
     WHERE t.user_id = ${p(userId)}
   `;
 

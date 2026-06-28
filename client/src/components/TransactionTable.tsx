@@ -1,4 +1,5 @@
 import { useState, useMemo, useRef, memo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import {
   useReactTable, getCoreRowModel, getPaginationRowModel, getSortedRowModel,
@@ -96,16 +97,19 @@ export const TransactionTable = memo(function TransactionTable({ monthId, type, 
     const showGroups = !categoryFilter || onlyGroups;
     const ungrouped = onlyGroups ? [] : transactions.filter(t => t.group_id == null);
 
-    const byGroup = new Map<number, { name: string; color: string; exp: number; inc: number; lastDate: string }>();
+    const byGroup = new Map<number, { name: string; color: string; exp: number; inc: number; lastDate: string; bill_id: number | null; tx_id: number | null; memberCount: number }>();
     for (const m of groupedMembers) {
       if (m.group_id == null) continue;
       let g = byGroup.get(m.group_id);
       if (!g) {
-        g = { name: m.group_name ?? 'group', color: m.group_color ?? '#71717a', exp: 0, inc: 0, lastDate: m.date };
+        g = { name: m.group_name ?? 'group', color: m.group_color ?? '#71717a', exp: 0, inc: 0, lastDate: m.date, bill_id: null, tx_id: null, memberCount: 0 };
         byGroup.set(m.group_id, g);
       }
+      g.memberCount++;
       if (m.type === 'income') g.inc += m.amount; else g.exp += m.amount;
       if (m.date > g.lastDate) g.lastDate = m.date;
+      if (m.bill_id != null && g.bill_id == null) { g.bill_id = m.bill_id; g.tx_id = m.id; }
+      else if (g.memberCount === 1) g.tx_id = m.id;  // single-member group: track real id for delete
     }
 
     const term = (search ?? '').trim().toLowerCase();
@@ -119,7 +123,7 @@ export const TransactionTable = memo(function TransactionTable({ monthId, type, 
         if (!g.name.toLowerCase().includes(term) && !members.some(m => txMatches(m, term))) continue;
       }
       groupRows.push({
-        id: -gid,
+        id: g.tx_id ?? -gid,
         month_id: monthId,
         date: g.lastDate,
         amount: Math.abs(net),
@@ -132,6 +136,7 @@ export const TransactionTable = memo(function TransactionTable({ monthId, type, 
         group_id: gid,
         group_name: g.name,
         group_color: g.color,
+        bill_id: g.bill_id,
         bank: 'manual',
         manually_reviewed: 1,
         created_at: '',
@@ -152,6 +157,8 @@ export const TransactionTable = memo(function TransactionTable({ monthId, type, 
   // Stable ref so columns memo doesn't re-create on every mutation object reference change
   const deleteMutateRef = useRef(deleteMutation.mutate);
   deleteMutateRef.current = deleteMutation.mutate;
+
+  const navigate = useNavigate();
 
   const columns = useMemo(() => [
     col.accessor('date', {
@@ -190,33 +197,93 @@ export const TransactionTable = memo(function TransactionTable({ monthId, type, 
     }),
     col.display({
       id: 'actions',
-      cell: i => i.row.original.group_id != null ? null : (
-        <div className="flex gap-1 justify-end">
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setEditTx(i.row.original)}>
-            <Pencil className="h-3.5 w-3.5" />
-          </Button>
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-7 w-7 text-rose-500 hover:text-rose-400">
-                <Trash2 className="h-3.5 w-3.5" />
+      cell: i => {
+        const tx = i.row.original;
+
+        if (tx.bill_id != null) {
+          return (
+            <div className="flex gap-1 justify-end">
+              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => navigate(`/bills/${tx.bill_id}`)}>
+                <Pencil className="h-3.5 w-3.5" />
               </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Delete transaction?</AlertDialogTitle>
-                <AlertDialogDescription>This cannot be undone.</AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction className="bg-rose-600 hover:bg-rose-700" onClick={() => deleteMutateRef.current(i.row.original.id)}>Delete</AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-        </div>
-      ),
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button variant="ghost" size="icon" className="h-7 w-7 text-rose-500 hover:text-rose-400">
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Delete transaction?</AlertDialogTitle>
+                    <AlertDialogDescription>This cannot be undone.</AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction className="bg-rose-600 hover:bg-rose-700" onClick={() => deleteMutateRef.current(tx.id)}>Delete</AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            </div>
+          );
+        }
+
+        if (tx.group_id != null) {
+          // Single-member group (e.g. bill was deleted, transaction orphaned): show delete only.
+          // Multi-member groups use a synthetic negative id and have no single tx to target.
+          if (tx.id > 0) {
+            return (
+              <div className="flex gap-1 justify-end">
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="ghost" size="icon" className="h-7 w-7 text-rose-500 hover:text-rose-400">
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Delete transaction?</AlertDialogTitle>
+                      <AlertDialogDescription>This cannot be undone.</AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction className="bg-rose-600 hover:bg-rose-700" onClick={() => deleteMutateRef.current(tx.id)}>Delete</AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </div>
+            );
+          }
+          return null;
+        }
+
+        return (
+          <div className="flex gap-1 justify-end">
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setEditTx(tx)}>
+              <Pencil className="h-3.5 w-3.5" />
+            </Button>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-7 w-7 text-rose-500 hover:text-rose-400">
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete transaction?</AlertDialogTitle>
+                  <AlertDialogDescription>This cannot be undone.</AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction className="bg-rose-600 hover:bg-rose-700" onClick={() => deleteMutateRef.current(tx.id)}>Delete</AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </div>
+        );
+      },
       meta: { className: 'w-0 whitespace-nowrap' },
     }),
-  ], [type]);
+  ], [type, navigate]);
 
   const table = useReactTable({
     data: tableData,

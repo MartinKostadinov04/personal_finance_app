@@ -210,14 +210,38 @@ router.patch('/:id', async (req: Request, res: Response) => {
   res.json(updated);
 });
 
-// DELETE /api/bills/:id — creator only.
+// DELETE /api/bills/:id — creator only. Also removes the caller's own
+// pushed-to-finance transaction(s) for this bill, so deleting the bill cleans up
+// the expense it created in their finance workspace. Other participants' pushed
+// transactions live in their own workspaces and are left untouched (and are
+// unreachable here under RLS anyway).
 router.delete('/:id', async (req: Request, res: Response) => {
   const userId = req.userId!;
   const billId = parseId(req.params.id, 'bill id');
   const bill = await one<Bill>('SELECT * FROM bills WHERE id = $1', [billId]);
   if (!bill) { res.status(404).json({ error: 'Bill not found' }); return; }
   if (bill.created_by !== userId) { res.status(403).json({ error: 'Only the creator can delete this bill' }); return; }
-  await query('DELETE FROM bills WHERE id = $1', [billId]);
+
+  await withTx(async (client) => {
+    // Capture the caller's pushed transaction id(s) before the bill cascade
+    // removes the bill_participants rows that link back to them.
+    const pushedIds = (await client.query<{ pushed_transaction_id: number }>(
+      `SELECT pushed_transaction_id FROM bill_participants
+       WHERE bill_id = $1 AND user_id = $2 AND pushed_transaction_id IS NOT NULL`,
+      [billId, userId],
+    )).rows.map(r => r.pushed_transaction_id);
+
+    await client.query('DELETE FROM bills WHERE id = $1', [billId]);
+
+    if (pushedIds.length > 0) {
+      // The user_id guard is redundant with RLS but keeps the scope explicit.
+      await client.query(
+        'DELETE FROM transactions WHERE id = ANY($1) AND user_id = $2',
+        [pushedIds, userId],
+      );
+    }
+  });
+
   res.json({ success: true });
 });
 
