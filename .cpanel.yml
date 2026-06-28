@@ -1,0 +1,6 @@
+deployment:
+  tasks:
+    - export DEPLOYPATH=/home/digiuczy/finance-management/
+    - /bin/cp -R client $DEPLOYPATH
+    - /bin/cp -R server $DEPLOYPATH
+    - /bin/cp package.json $DEPLOYPATH
