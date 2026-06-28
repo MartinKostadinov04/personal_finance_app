@@ -115,9 +115,19 @@ router.get('/', async (req: Request, res: Response) => {
     ) pay ON pay.debt_id = d.id
     WHERE d.user_id = $1
   `;
-  if (direction) q += ` AND d.direction = ${p(direction)}`;
-  if (status) q += ` AND d.status = ${p(status)}`;
-  if (contactId) q += ` AND d.contact_id = ${p(parseInt(contactId))}`;
+  if (direction) {
+    if (direction !== 'owed_to_me' && direction !== 'i_owe') throw new BadRequest('direction must be owed_to_me or i_owe');
+    q += ` AND d.direction = ${p(direction)}`;
+  }
+  if (status) {
+    if (status !== 'open' && status !== 'settled') throw new BadRequest('status must be open or settled');
+    q += ` AND d.status = ${p(status)}`;
+  }
+  if (contactId) {
+    const cid = Number(contactId);
+    if (!Number.isInteger(cid) || cid <= 0) throw new BadRequest('contactId must be a positive integer');
+    q += ` AND d.contact_id = ${p(cid)}`;
+  }
   q += " ORDER BY (d.status = 'open') DESC, d.due_date ASC NULLS LAST, d.created_at DESC";
 
   const debts = await query<Debt>(q, params);
@@ -163,6 +173,8 @@ router.post('/', async (req: Request, res: Response) => {
   if (direction !== 'owed_to_me' && direction !== 'i_owe') throw new BadRequest('direction must be owed_to_me or i_owe');
   const amt = Number(amount);
   if (!Number.isFinite(amt) || amt <= 0) throw new BadRequest('amount must be a positive number');
+  if (incurredOn !== undefined && !isYMD(incurredOn)) throw new BadRequest('incurredOn must be YYYY-MM-DD');
+  if (dueDate !== undefined && !isYMD(dueDate)) throw new BadRequest('dueDate must be YYYY-MM-DD');
 
   const debt = await withTx(async () => {
     const contact = await resolveContact(userId, name);
@@ -206,6 +218,8 @@ router.patch('/:id', async (req: Request, res: Response) => {
   }
   const hasDescription = 'description' in req.body;
   const hasDueDate = 'dueDate' in req.body;
+  if (incurredOn !== undefined && !isYMD(incurredOn)) throw new BadRequest('incurredOn must be YYYY-MM-DD');
+  if (hasDueDate && dueDate != null && !isYMD(dueDate)) throw new BadRequest('dueDate must be YYYY-MM-DD');
 
   const debt = await withTx(async () => {
     let contactId: number | null = null;
