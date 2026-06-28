@@ -23,8 +23,18 @@ import merchantRulesRouter from './routes/merchant-rules';
 import groupsRouter from './routes/groups';
 import billsRouter from './routes/bills';
 
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled promise rejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err);
+});
+
 const PORT = parseInt(process.env.PORT ?? '3001');
 
+if (process.env.NODE_ENV === 'production' && !process.env.CORS_ORIGIN) {
+  console.warn('WARNING: CORS_ORIGIN is not set — API will only accept requests from http://localhost:5173');
+}
 const allowedOrigins = (process.env.CORS_ORIGIN ?? 'http://localhost:5173')
   .split(',').map(s => s.trim()).filter(Boolean);
 

@@ -114,6 +114,7 @@ router.put('/:id', async (req: Request, res: Response) => {
     RETURNING *
   `, [date ?? null, amount ?? null, description ?? null, type ?? null, hasCategoryId ? 1 : 0, category_id ?? null, bank ?? null, targetMonthId, id, userId]);
 
+  if (!updated) { res.status(404).json({ error: 'Transaction not found' }); return; }
   res.json(updated);
 });
 

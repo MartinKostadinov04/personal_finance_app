@@ -18,9 +18,15 @@ export function parseId(raw: string, label = 'id'): number {
   return n;
 }
 
-/** Any integer URL param (e.g. year/month); throws 400 if not an integer. */
-export function parseIntStrict(raw: string, label: string): number {
+/** Any integer URL param (e.g. year/month); throws 400 if not an integer or outside optional range. */
+export function parseIntStrict(
+  raw: string,
+  label: string,
+  opts: { min?: number; max?: number } = {},
+): number {
   const n = Number(raw);
   if (!Number.isInteger(n)) throw new BadRequest(`Invalid ${label}`);
+  if (opts.min != null && n < opts.min) throw new BadRequest(`Invalid ${label}`);
+  if (opts.max != null && n > opts.max) throw new BadRequest(`Invalid ${label}`);
   return n;
 }
