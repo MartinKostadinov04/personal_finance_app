@@ -7,6 +7,7 @@ import { Analytics } from '@/pages/Analytics';
 import { ControlPanel } from '@/pages/ControlPanel';
 import { Bills } from '@/pages/Bills';
 import { BillDetail } from '@/pages/BillDetail';
+import { Debts } from '@/pages/Debts';
 import { Login } from '@/pages/Login';
 import { SetPassword } from '@/pages/SetPassword';
 import { MobileNav } from '@/components/MobileNav';
@@ -132,6 +133,7 @@ export function App() {
               <Route path="/transactions" element={<Transactions />} />
               <Route path="/bills" element={<Bills />} />
               <Route path="/bills/:id" element={<BillDetail />} />
+              <Route path="/debts" element={<Debts />} />
               <Route path="/analytics" element={<Analytics />} />
               <Route path="/control-panel" element={<ControlPanel />} />
             </Routes>

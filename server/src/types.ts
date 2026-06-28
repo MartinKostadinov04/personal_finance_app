@@ -143,3 +143,45 @@ export interface BillExpense {
   payers?: BillExpensePayer[];
   splits?: BillExpenseSplit[];
 }
+
+/* ─── Debt Ledger ─── */
+
+export type DebtDirection = 'owed_to_me' | 'i_owe';
+
+export interface DebtContact {
+  id: number;
+  user_id: string;
+  name: string;
+  created_at: string;
+}
+
+export interface DebtPayment {
+  id: number;
+  user_id: string;
+  debt_id: number;
+  amount: number;
+  paid_on: string;
+  note: string | null;
+  transaction_id: number | null;
+  created_at: string;
+}
+
+export interface Debt {
+  id: number;
+  user_id: string;
+  contact_id: number;
+  direction: DebtDirection;
+  amount: number;
+  currency: string;
+  description: string | null;
+  status: 'open' | 'settled';
+  incurred_on: string;
+  due_date: string | null;
+  settled_at: string | null;
+  created_at: string;
+  // Joined / computed on read.
+  contact_name?: string;
+  paid?: number;
+  outstanding?: number;
+  payments?: DebtPayment[];
+}

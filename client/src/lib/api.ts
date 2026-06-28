@@ -1,4 +1,4 @@
-import type { Category, Month, Transaction, Budget, StableBudget, MonthlySummaryData, ParsedTransaction, Group, Bill, BillDetail, BillParticipant, BillExpense, Settlement, ExpenseInput } from './types';
+import type { Category, Month, Transaction, Budget, StableBudget, MonthlySummaryData, ParsedTransaction, Group, Bill, BillDetail, BillParticipant, BillExpense, Settlement, ExpenseInput, Debt, DebtContact, DebtPayment, DebtSummary, DebtDirection } from './types';
 import { supabase } from './supabase';
 
 // Attach the current Supabase access token so the API can authenticate the user.
@@ -248,4 +248,38 @@ export const billsApi = {
     return res.json();
   },
   receiptUrl: (id: number, eid: number) => apiFetch<{ url: string }>(`/api/bills/${id}/expenses/${eid}/receipt`),
+};
+
+// Opt-in "also record this repayment as a real income/expense" — the server
+// derives the month from the payment date and the income/expense sign from the
+// debt's direction.
+export interface RecordTransactionOpts { bank?: string; category_id?: number | null; }
+
+export const debtsApi = {
+  getAll: (params?: { direction?: DebtDirection; status?: 'open' | 'settled'; contactId?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.direction) qs.set('direction', params.direction);
+    if (params?.status) qs.set('status', params.status);
+    if (params?.contactId) qs.set('contactId', String(params.contactId));
+    const q = qs.toString();
+    return apiFetch<Debt[]>(`/api/debts${q ? `?${q}` : ''}`);
+  },
+  getSummary: () => apiFetch<DebtSummary>('/api/debts/summary'),
+  getContacts: () => apiFetch<DebtContact[]>('/api/debts/contacts'),
+  get: (id: number) => apiFetch<Debt>(`/api/debts/${id}`),
+  create: (data: {
+    counterpartyName: string; direction: DebtDirection; amount: number;
+    currency?: string; description?: string; incurredOn?: string; dueDate?: string | null;
+  }) => apiFetch<Debt>('/api/debts', { method: 'POST', body: JSON.stringify(data) }),
+  update: (id: number, data: Partial<{
+    counterpartyName: string; direction: DebtDirection; amount: number;
+    currency: string; description: string | null; incurredOn: string; dueDate: string | null;
+  }>) => apiFetch<Debt>(`/api/debts/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  remove: (id: number) => apiFetch<{ success: boolean }>(`/api/debts/${id}`, { method: 'DELETE' }),
+  addPayment: (id: number, data: { amount: number; paidOn?: string; note?: string; recordTransaction?: RecordTransactionOpts | null }) =>
+    apiFetch<{ debt: Debt; payment: DebtPayment }>(`/api/debts/${id}/payments`, { method: 'POST', body: JSON.stringify(data) }),
+  removePayment: (id: number, pid: number) =>
+    apiFetch<Debt>(`/api/debts/${id}/payments/${pid}`, { method: 'DELETE' }),
+  settle: (id: number, data?: { note?: string; recordTransaction?: RecordTransactionOpts | null }) =>
+    apiFetch<Debt>(`/api/debts/${id}/settle`, { method: 'POST', body: JSON.stringify(data ?? {}) }),
 };
