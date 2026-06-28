@@ -16,6 +16,10 @@ types.setTypeParser(20, (v: string) => parseInt(v, 10));
 // a string) rather than letting node-postgres convert them to Date objects.
 types.setTypeParser(1114, (v: string) => v); // timestamp
 types.setTypeParser(1184, (v: string) => v); // timestamptz
+// Keep DATE columns as raw 'YYYY-MM-DD' strings too (the debt ledger uses the date
+// type). Otherwise pg builds a local-midnight Date that JSON-serializes to a
+// timezone-shifted ISO string and can land on the wrong calendar day.
+types.setTypeParser(1082, (v: string) => v); // date
 
 let pool: Pool | null = null;
 

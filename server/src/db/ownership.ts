@@ -14,3 +14,8 @@ export async function userOwnsMonth(userId: string, monthId: number): Promise<bo
 export async function userOwnsCategory(userId: string, categoryId: number): Promise<boolean> {
   return !!(await one('SELECT 1 FROM categories WHERE id = $1 AND user_id = $2', [categoryId, userId]));
 }
+
+/** True if the debt belongs to the user. */
+export async function userOwnsDebt(userId: string, debtId: number): Promise<boolean> {
+  return !!(await one('SELECT 1 FROM debts WHERE id = $1 AND user_id = $2', [debtId, userId]));
+}

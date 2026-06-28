@@ -212,3 +212,61 @@ export interface ExpenseInput {
   payers: { participant_id: number; amount_paid: number }[];
   splits: { participant_id: number; share_amount: number; covered_by_participant_id?: number | null }[];
 }
+
+/* ─── Debt Ledger ─── */
+
+export type DebtDirection = 'owed_to_me' | 'i_owe';
+
+export interface DebtContact {
+  id: number;
+  user_id: string;
+  name: string;
+  created_at: string;
+}
+
+export interface DebtPayment {
+  id: number;
+  user_id: string;
+  debt_id: number;
+  amount: number;
+  paid_on: string;
+  note: string | null;
+  transaction_id: number | null;
+  created_at: string;
+}
+
+export interface Debt {
+  id: number;
+  user_id: string;
+  contact_id: number;
+  direction: DebtDirection;
+  amount: number;
+  currency: string;
+  description: string | null;
+  status: 'open' | 'settled';
+  incurred_on: string;
+  due_date: string | null;
+  settled_at: string | null;
+  created_at: string;
+  // Joined / computed on read.
+  contact_name: string;
+  paid: number;
+  outstanding: number;
+  payments?: DebtPayment[];
+}
+
+export interface ContactNet {
+  contactId: number;
+  name: string;
+  owedToMe: number;
+  iOwe: number;
+  net: number; // + ⇒ they owe you; − ⇒ you owe them
+  openCount: number;
+}
+
+export interface DebtSummary {
+  owedToMe: number;
+  iOwe: number;
+  net: number;
+  byContact: ContactNet[];
+}

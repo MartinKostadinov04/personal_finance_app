@@ -22,6 +22,7 @@ import analyticsRouter from './routes/analytics';
 import merchantRulesRouter from './routes/merchant-rules';
 import groupsRouter from './routes/groups';
 import billsRouter from './routes/bills';
+import debtsRouter from './routes/debts';
 
 process.on('unhandledRejection', (reason) => {
   console.error('Unhandled promise rejection:', reason);
@@ -78,6 +79,7 @@ app.use('/api/analytics', analyticsRouter);
 app.use('/api/merchant-rules', merchantRulesRouter);
 app.use('/api/groups', groupsRouter);
 app.use('/api/bills', billsRouter);
+app.use('/api/debts', debtsRouter);
 
 // Terminal error handler — must be last, after all routers.
 app.use(errorHandler);
