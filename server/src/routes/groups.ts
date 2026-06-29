@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { query, one, withTx } from '../db/pg';
 import { parseId } from '../lib/http';
+import { pruneEmptyGroups } from '../lib/groups';
 
 const router = Router();
 
@@ -125,7 +126,17 @@ router.post('/:id/members', async (req: Request, res: Response) => {
   const { add, remove } = req.body as { add?: number[]; remove?: number[] };
 
   await withTx(async (client) => {
+    // Groups the added transactions currently belong to — moving them here may
+    // leave those groups empty, so they're pruned alongside this group below.
+    let oldGroupIds: number[] = [];
     if (Array.isArray(add) && add.length > 0) {
+      const ph = add.map((_, i) => `$${i + 2}`).join(', ');
+      oldGroupIds = (await client.query<{ group_id: number }>(
+        `SELECT DISTINCT group_id FROM transactions
+           WHERE user_id = $1 AND id IN (${ph}) AND group_id IS NOT NULL`,
+        [userId, ...add],
+      )).rows.map(r => r.group_id);
+
       const placeholders = add.map((_, i) => `$${i + 3}`).join(', ');
       await client.query(
         `UPDATE transactions SET group_id = $1 WHERE user_id = $2 AND id IN (${placeholders}) AND type IN ${GROUPABLE_TYPES}`,
@@ -139,6 +150,7 @@ router.post('/:id/members', async (req: Request, res: Response) => {
         [userId, ...remove, id],
       );
     }
+    await pruneEmptyGroups(client, userId, [id, ...oldGroupIds]);
   });
 
   res.json({ success: true });

@@ -1,5 +1,5 @@
 // Loads server environment variables from the repo-root .env. Imported first
-// (before any module that reads env at import time, e.g. the Anthropic client),
+// (before any module that reads env at import time, e.g. the Supabase/DB clients),
 // so the values are present regardless of the process working directory.
 import path from 'path';
 import dotenv from 'dotenv';

@@ -1,6 +1,7 @@
-import { useRef, useState, useEffect, useMemo } from 'react';
+import { useRef, useState, useMemo } from 'react';
 import { useQueryClient, useMutation, useQuery } from '@tanstack/react-query';
-import { Upload, FileText, X, ChevronDown, Users } from 'lucide-react';
+import { Upload, FileText, X, Users } from 'lucide-react';
+import { CategoryPicker } from '@/components/CategoryPicker';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -48,6 +49,10 @@ export function ImportDialog({ open, onOpenChange, year, month }: ImportDialogPr
   const [groupMenuOpen, setGroupMenuOpen] = useState(false);
   const [lastIdx, setLastIdx] = useState<number | null>(null);
 
+  // Display-only sort — never reorders `preview` itself (all state is keyed by original index).
+  type SortKey = 'date' | 'description' | 'amount' | 'category';
+  const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' } | null>(null);
+
   const { data: categories = [] } = useQuery({ queryKey: ['categories'], queryFn: categoriesApi.getAll, staleTime: 0 });
 
   // Existing groups used in the ~2 months leading up to the import target month.
@@ -78,6 +83,7 @@ export function ImportDialog({ open, onOpenChange, year, month }: ImportDialogPr
     setGroupDraft(null);
     setGroupMenuOpen(false);
     setLastIdx(null);
+    setSort(null);
   };
 
   // ── Grouping helpers ──────────────────────────────────────────────
@@ -128,6 +134,18 @@ export function ImportDialog({ open, onOpenChange, year, month }: ImportDialogPr
 
   const removeStagedGroup = (gi: number) =>
     setStagedGroups(prev => prev.filter((_, i) => i !== gi));
+
+  // Re-open a committed staged group to keep editing its rows: pull it back into
+  // the active draft and drop it from the staged list (commitGroupDraft re-adds it).
+  const editStagedGroup = (gi: number) => {
+    if (groupDraft) return; // finish the current draft first
+    setStagedGroups(prev => {
+      const g = prev[gi];
+      if (g) setGroupDraft({ ...g, rows: new Set(g.rows) });
+      return prev.filter((_, i) => i !== gi);
+    });
+    setLastIdx(null);
+  };
 
   const toggleExpand = (i: number) =>
     setExpandedRows(prev => {
@@ -215,6 +233,35 @@ export function ImportDialog({ open, onOpenChange, year, month }: ImportDialogPr
     });
 
   const allCats = (categories as Category[]).filter(c => c.is_active);
+
+  // Display-order array of original preview indices. Sorting is purely presentational —
+  // all state (removedRows, editedCategories, groupDraft, etc.) remains keyed by original index.
+  const order = useMemo(() => {
+    if (!preview) return [] as number[];
+    const indices = preview.map((_, i) => i);
+    if (!sort) return indices;
+    return [...indices].sort((a, b) => {
+      const ta = preview[a], tb = preview[b];
+      let cmp = 0;
+      if (sort.key === 'date') {
+        cmp = ta.date < tb.date ? -1 : ta.date > tb.date ? 1 : 0;
+      } else if (sort.key === 'description') {
+        cmp = (ta.description ?? '').localeCompare(tb.description ?? '');
+      } else if (sort.key === 'amount') {
+        cmp = ta.amount - tb.amount;
+      } else if (sort.key === 'category') {
+        const catName = (i: number) => {
+          const id = i in editedCategories ? editedCategories[i] : preview[i].category_id;
+          return allCats.find(c => c.id === id)?.display_name ?? '';
+        };
+        cmp = catName(a).localeCompare(catName(b));
+      }
+      return sort.dir === 'asc' ? cmp : -cmp;
+    });
+  }, [preview, sort, editedCategories, allCats]);
+
+  const toggleSort = (key: SortKey) =>
+    setSort(prev => !prev || prev.key !== key ? { key, dir: 'asc' } : prev.dir === 'asc' ? { key, dir: 'desc' } : null);
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) resetAll(); onOpenChange(v); }}>
@@ -335,7 +382,14 @@ export function ImportDialog({ open, onOpenChange, year, month }: ImportDialogPr
                         style={{ borderColor: g.color, color: g.color }}
                       >
                         <span className="w-2 h-2 rounded-full" style={{ background: g.color }} />
-                        {g.name} ({g.rows.size})
+                        <button
+                          onClick={() => editStagedGroup(gi)}
+                          disabled={!!groupDraft}
+                          className="hover:underline disabled:no-underline disabled:opacity-60 disabled:cursor-default"
+                          title="Edit this group — add or remove transactions"
+                        >
+                          {g.name} ({g.rows.size})
+                        </button>
                         <button onClick={() => removeStagedGroup(gi)} className="hover:text-rose-400" title="Remove group">
                           <X className="w-3 h-3" />
                         </button>
@@ -348,15 +402,24 @@ export function ImportDialog({ open, onOpenChange, year, month }: ImportDialogPr
                     <thead className="bg-zinc-800">
                       <tr>
                         {groupDraft && <th className="w-8" />}
-                        <th className="text-left px-3 py-2 text-xs text-zinc-400 font-medium">Date</th>
-                        <th className="text-left px-3 py-2 text-xs text-zinc-400 font-medium">Description</th>
-                        <th className="text-right px-3 py-2 text-xs text-zinc-400 font-medium">Amount</th>
-                        <th className="text-left px-3 py-2 text-xs text-zinc-400 font-medium">Category</th>
+                        <th className="text-left px-3 py-2 text-xs text-zinc-400 font-medium cursor-pointer select-none hover:text-zinc-200" onClick={() => toggleSort('date')}>
+                          Date{sort?.key === 'date' ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : ''}
+                        </th>
+                        <th className="text-left px-3 py-2 text-xs text-zinc-400 font-medium cursor-pointer select-none hover:text-zinc-200" onClick={() => toggleSort('description')}>
+                          Description{sort?.key === 'description' ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : ''}
+                        </th>
+                        <th className="text-right px-3 py-2 text-xs text-zinc-400 font-medium cursor-pointer select-none hover:text-zinc-200" onClick={() => toggleSort('amount')}>
+                          Amount{sort?.key === 'amount' ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : ''}
+                        </th>
+                        <th className="text-left px-3 py-2 text-xs text-zinc-400 font-medium cursor-pointer select-none hover:text-zinc-200" onClick={() => toggleSort('category')}>
+                          Category{sort?.key === 'category' ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : ''}
+                        </th>
                         <th className="w-8" />
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-zinc-800">
-                      {preview.slice(0, 100).map((tx, i) => {
+                      {order.slice(0, 100).map(i => {
+                        const tx = preview[i];
                         const removed = removedRows.has(i);
                         const catId = i in editedCategories ? editedCategories[i] : tx.category_id;
                         const txCats = allCats.filter(c => c.type === tx.type || tx.type === 'transfer');
@@ -498,75 +561,3 @@ function FileDropZone({ bank, file, onFileChange }: { bank: Bank; file?: File; o
   );
 }
 
-function CategoryPicker({ categories, value, onChange, disabled }: {
-  categories: Category[];
-  value: number | null;
-  onChange: (v: number | null) => void;
-  disabled?: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const selected = categories.find(c => c.id === value) ?? null;
-
-  // Close the popover when the trigger button scrolls out of the visible area.
-  useEffect(() => {
-    if (!open || !triggerRef.current) return;
-    const observer = new IntersectionObserver(
-      ([entry]) => { if (!entry.isIntersecting) setOpen(false); },
-      { threshold: 0.01 }
-    );
-    observer.observe(triggerRef.current);
-    return () => observer.disconnect();
-  }, [open]);
-
-  return (
-    <Popover open={open && !disabled} onOpenChange={v => !disabled && setOpen(v)}>
-      <PopoverTrigger asChild>
-        <button
-          ref={triggerRef}
-          disabled={disabled}
-          className={cn(
-            'flex items-center gap-1.5 h-6 px-2 rounded border text-xs w-full min-w-[140px] transition-colors',
-            'border-zinc-700 bg-zinc-900 hover:border-zinc-500',
-            disabled && 'opacity-40 cursor-not-allowed'
-          )}
-        >
-          {selected ? (
-            <>
-              <span className="shrink-0 w-2 h-2 rounded-full" style={{ backgroundColor: selected.color ?? '#71717a' }} />
-              <span className="truncate flex-1 text-left" style={{ color: selected.color ?? '#a1a1aa' }}>{selected.display_name}</span>
-            </>
-          ) : (
-            <span className="flex-1 text-left text-zinc-500">Uncategorized</span>
-          )}
-          <ChevronDown className="shrink-0 w-3 h-3 text-zinc-500 ml-auto" />
-        </button>
-      </PopoverTrigger>
-      <PopoverContent className="w-48 p-1 max-h-60 overflow-y-auto" align="start">
-        <button
-          onClick={() => { onChange(null); setOpen(false); }}
-          className={cn(
-            'flex items-center gap-2 w-full px-2 py-1 rounded text-xs text-zinc-400 hover:bg-zinc-800 transition-colors',
-            value === null && 'bg-zinc-800'
-          )}
-        >
-          <span className="w-2 h-2 rounded-full bg-zinc-600 shrink-0" />
-          Uncategorized
-        </button>
-        {categories.map(c => (
-          <button
-            key={c.id}
-            onClick={() => { onChange(c.id); setOpen(false); }}
-            className={cn(
-              'flex items-center gap-2 w-full px-2 py-1 rounded text-xs hover:bg-zinc-800 transition-colors',
-              value === c.id && 'bg-zinc-800'
-            )}
-          >
-            <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: c.color ?? '#71717a' }} />
-            <span style={{ color: c.color ?? '#a1a1aa' }}>{c.display_name}</span>
-          </button>
-        ))}
-      </PopoverContent>
-    </Popover>
-  );
-}

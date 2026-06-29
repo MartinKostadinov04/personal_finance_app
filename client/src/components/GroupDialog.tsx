@@ -9,6 +9,7 @@ import { DatePicker } from '@/components/DatePicker';
 import { toYMD } from '@/lib/dates';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { groupsApi, monthsApi, transactionsApi } from '@/lib/api';
+import { useMonth } from '@/contexts/MonthContext';
 import { cn, formatCurrency, formatDate } from '@/lib/utils';
 import type { Transaction, Group } from '@/lib/types';
 
@@ -19,12 +20,11 @@ function useGroupInvalidate() {
 }
 
 /* ── Shared transaction multi-picker (one month at a time, selection persists across months) ── */
-function TransactionPicker({ year, month, onMonthChange, selected, onToggle, excludeGroupId }: {
+function TransactionPicker({ year, month, onMonthChange, selected, onToggle }: {
   year: number; month: number;
   onMonthChange: (y: number, m: number) => void;
   selected: Set<number>;
   onToggle: (id: number) => void;
-  excludeGroupId?: number; // when adding to an existing group, still show that group's own members as selected
 }) {
   const [search, setSearch] = useState('');
   const { data: monthRecord } = useQuery({
@@ -32,14 +32,18 @@ function TransactionPicker({ year, month, onMonthChange, selected, onToggle, exc
     queryFn: () => monthsApi.getOrCreate(year, month),
   });
   const monthId = monthRecord?.id ?? 0;
+  // While searching, look across ALL months so a description from any month is
+  // findable; with an empty box, browse the selected month.
+  const searching = search.trim().length > 0;
   const { data: rawTxs, isLoading } = useQuery({
-    queryKey: ['transactions', { monthId, search }],
-    queryFn: () => transactionsApi.getAll({ monthId, search }),
-    enabled: !!monthId,
+    queryKey: ['transactions', { monthId, search, searching }],
+    queryFn: () => transactionsApi.getAll(searching ? { search } : { monthId }),
+    enabled: searching || !!monthId,
   });
-  // Only expense/income, and not already in a *different* group.
+  // Only expense/income that aren't already in a group (existing members are
+  // listed separately, above the picker).
   const txs = ((rawTxs ?? []) as Transaction[]).filter(t =>
-    t.type !== 'transfer' && (t.group_id == null || t.group_id === excludeGroupId)
+    t.type !== 'transfer' && t.group_id == null
   );
 
   return (
@@ -52,7 +56,7 @@ function TransactionPicker({ year, month, onMonthChange, selected, onToggle, exc
         {isLoading ? (
           <p className="text-xs text-zinc-600 text-center py-6">Loading…</p>
         ) : txs.length === 0 ? (
-          <p className="text-xs text-zinc-600 text-center py-6">No transactions this month</p>
+          <p className="text-xs text-zinc-600 text-center py-6">{searching ? 'No matching transactions' : 'No transactions this month'}</p>
         ) : (
           <table className="w-full text-xs">
             <tbody>
@@ -152,7 +156,7 @@ export function GroupDialog({ open, onOpenChange, year, month }: {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-xl">
+      <DialogContent className="sm:max-w-xl max-h-[85vh] overflow-y-auto slim-scrollbar">
         <DialogHeader><DialogTitle>New Group</DialogTitle></DialogHeader>
         <div className="space-y-4 mt-2">
           <div className="flex items-center gap-2">
@@ -215,7 +219,7 @@ export function ManageGroupsDialog({ open, onOpenChange, year, month }: {
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) setEditId(null); onOpenChange(v); }}>
-      <DialogContent className="sm:max-w-xl">
+      <DialogContent className="sm:max-w-xl max-h-[85vh] overflow-y-auto slim-scrollbar">
         <DialogHeader><DialogTitle>Manage Groups</DialogTitle></DialogHeader>
         <div className="space-y-2 mt-2">
           {(groups as Group[]).length === 0 ? (
@@ -244,18 +248,8 @@ function GroupRow({ group, expanded, onToggleExpand, onChanged, year, month }: {
 }) {
   const [name, setName] = useState(group.name);
   const [color, setColor] = useState(group.color);
-  const [pickYear, setPickYear] = useState(year);
-  const [pickMonth, setPickMonth] = useState(month);
-  const [adding, setAdding] = useState<Set<number>>(new Set());
 
   useEffect(() => { setName(group.name); setColor(group.color); }, [group.name, group.color]);
-
-  const { data: rawMembers = [] } = useQuery({
-    queryKey: ['transactions', { grouped: true, of: group.id }],
-    queryFn: () => transactionsApi.getAll({ grouped: true }),
-    enabled: expanded,
-  });
-  const members = (rawMembers as Transaction[]).filter(t => t.group_id === group.id);
 
   const saveMeta = async () => {
     if (name.trim() !== group.name || color !== group.color) {
@@ -263,14 +257,6 @@ function GroupRow({ group, expanded, onToggleExpand, onChanged, year, month }: {
       onChanged();
     }
   };
-  const removeMember = async (id: number) => { await groupsApi.setMembers(group.id, { remove: [id] }); onChanged(); };
-  const addSelected = async () => {
-    if (adding.size === 0) return;
-    await groupsApi.setMembers(group.id, { add: [...adding] });
-    setAdding(new Set());
-    onChanged();
-  };
-  const toggleAdd = (id: number) => setAdding(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
   return (
     <div className="border border-zinc-800 rounded-md">
@@ -297,39 +283,118 @@ function GroupRow({ group, expanded, onToggleExpand, onChanged, year, month }: {
       </div>
 
       {expanded && (
-        <div className="border-t border-zinc-800 p-3 space-y-3">
-          <div>
-            <p className="text-xs text-zinc-400 mb-1.5">Members</p>
-            {members.length === 0 ? (
-              <p className="text-xs text-zinc-600">No members.</p>
-            ) : (
-              <div className="space-y-0.5 max-h-40 overflow-y-auto">
-                {members.map(m => (
-                  <div key={m.id} className="flex items-center gap-2 text-xs py-0.5">
-                    <span className="text-zinc-500 tabular-nums shrink-0">{formatDate(m.date)}</span>
-                    <span className="flex-1 truncate" title={m.description}>{m.description}</span>
-                    <span className={cn('font-mono tabular-nums shrink-0', m.type === 'income' ? 'text-emerald-500' : 'text-rose-400')}>{m.type === 'income' ? '+' : '−'}{formatCurrency(m.amount)}</span>
-                    <button onClick={() => removeMember(m.id)} className="text-zinc-600 hover:text-rose-400 shrink-0" title="Remove from group"><Trash2 className="h-3 w-3" /></button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div>
-            <p className="text-xs text-zinc-400 mb-1.5">Add transactions</p>
-            <TransactionPicker
-              year={pickYear} month={pickMonth}
-              onMonthChange={(y, m) => { setPickYear(y); setPickMonth(m); }}
-              selected={adding} onToggle={toggleAdd}
-              excludeGroupId={group.id}
-            />
-            <Button size="sm" className="h-7 text-xs mt-2" onClick={addSelected} disabled={adding.size === 0}>
-              <Plus className="h-3.5 w-3.5 mr-1" /> Add {adding.size > 0 ? adding.size : ''} to group
-            </Button>
-          </div>
+        <div className="border-t border-zinc-800">
+          <GroupMembersEditor group={group} year={year} month={month} onChanged={onChanged} />
         </div>
       )}
     </div>
+  );
+}
+
+/* ── Reusable member editor: list + remove + add-from-month picker ── */
+export function GroupMembersEditor({ group, year, month, onChanged }: {
+  group: Group;
+  year: number; month: number;
+  onChanged: () => void;
+}) {
+  const [pickYear, setPickYear] = useState(year);
+  const [pickMonth, setPickMonth] = useState(month);
+  const [adding, setAdding] = useState<Set<number>>(new Set());
+
+  const { data: rawMembers = [] } = useQuery({
+    queryKey: ['transactions', { grouped: true, of: group.id }],
+    queryFn: () => transactionsApi.getAll({ grouped: true }),
+  });
+  const members = (rawMembers as Transaction[]).filter(t => t.group_id === group.id);
+
+  const removeMember = async (id: number) => { await groupsApi.setMembers(group.id, { remove: [id] }); onChanged(); };
+  const addSelected = async () => {
+    if (adding.size === 0) return;
+    await groupsApi.setMembers(group.id, { add: [...adding] });
+    setAdding(new Set());
+    onChanged();
+  };
+  const toggleAdd = (id: number) => setAdding(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  return (
+    <div className="p-3 space-y-3">
+      <div>
+        <p className="text-xs text-zinc-400 mb-1.5">Members</p>
+        {members.length === 0 ? (
+          <p className="text-xs text-zinc-600">No members.</p>
+        ) : (
+          <div className="space-y-0.5 max-h-40 overflow-y-auto slim-scrollbar">
+            {members.map(m => (
+              <div key={m.id} className="flex items-center gap-2 text-xs py-0.5">
+                <span className="text-zinc-500 tabular-nums shrink-0">{formatDate(m.date)}</span>
+                <span className="flex-1 truncate" title={m.description}>{m.description}</span>
+                <span className={cn('font-mono tabular-nums shrink-0', m.type === 'income' ? 'text-emerald-500' : 'text-rose-400')}>{m.type === 'income' ? '+' : '−'}{formatCurrency(m.amount)}</span>
+                <button onClick={() => removeMember(m.id)} className="text-zinc-600 hover:text-rose-400 shrink-0" title="Remove from group"><Trash2 className="h-3 w-3" /></button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div>
+        <p className="text-xs text-zinc-400 mb-1.5">Add transactions</p>
+        <TransactionPicker
+          year={pickYear} month={pickMonth}
+          onMonthChange={(y, m) => { setPickYear(y); setPickMonth(m); }}
+          selected={adding} onToggle={toggleAdd}
+        />
+        <Button size="sm" className="h-7 text-xs mt-2" onClick={addSelected} disabled={adding.size === 0}>
+          <Plus className="h-3.5 w-3.5 mr-1" /> Add {adding.size > 0 ? adding.size : ''} to group
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/* ── Edit a single group (name/color + membership), opened from the table ── */
+export function EditGroupDialog({ groupId, onOpenChange }: {
+  groupId: number | null;
+  onOpenChange: (v: boolean) => void;
+}) {
+  const { year, month } = useMonth();
+  const invalidate = useGroupInvalidate();
+  const { data: groups = [] } = useQuery({
+    queryKey: ['groups'],
+    queryFn: () => groupsApi.getAll(),
+    enabled: groupId != null,
+  });
+  const group = (groups as Group[]).find(g => g.id === groupId) ?? null;
+
+  const [name, setName] = useState('');
+  const [color, setColor] = useState('#71717a');
+  useEffect(() => { if (group) { setName(group.name); setColor(group.color); } }, [group?.id, group?.name, group?.color]);
+
+  const saveMeta = async () => {
+    if (!group) return;
+    if (name.trim() && (name.trim() !== group.name || color !== group.color)) {
+      await groupsApi.update(group.id, { name: name.trim(), color });
+      invalidate();
+    }
+  };
+
+  return (
+    <Dialog open={groupId != null} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-xl max-h-[85vh] overflow-y-auto slim-scrollbar">
+        <DialogHeader><DialogTitle>Edit Group</DialogTitle></DialogHeader>
+        {group ? (
+          <div className="space-y-3 mt-2">
+            <div className="flex items-center gap-2">
+              <input type="color" value={color} onChange={e => setColor(e.target.value)} onBlur={saveMeta} className="h-9 w-9 rounded cursor-pointer bg-transparent border-0 shrink-0" />
+              <Input value={name} onChange={e => setName(e.target.value)} onBlur={saveMeta} onKeyDown={e => e.key === 'Enter' && saveMeta()} className="flex-1" />
+            </div>
+            <div className="border border-zinc-800 rounded-md">
+              <GroupMembersEditor group={group} year={year} month={month} onChanged={invalidate} />
+            </div>
+          </div>
+        ) : (
+          <p className="text-sm text-zinc-600 text-center py-8">Loading…</p>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }

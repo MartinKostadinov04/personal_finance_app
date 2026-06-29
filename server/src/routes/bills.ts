@@ -5,6 +5,7 @@ import { parseId } from '../lib/http';
 import { resolveMonthId } from '../db/months';
 import { uploadReceipt, signedReceiptUrl } from '../lib/storage';
 import { getSupabaseAdmin } from '../lib/supabaseAdmin';
+import { pruneEmptyGroups } from '../lib/groups';
 import {
   computeSettlement,
   SettlementParticipant,
@@ -233,13 +234,23 @@ router.delete('/:id', async (req: Request, res: Response) => {
 
     await client.query('DELETE FROM bills WHERE id = $1', [billId]);
 
+    let groupIds: number[] = [];
     if (pushedIds.length > 0) {
+      // Capture the groups these transactions belong to (push-to-finance puts each
+      // pushed tx in a group named after the bill) before deleting them, so the
+      // now-empty bill group is pruned rather than left behind.
+      groupIds = (await client.query<{ group_id: number }>(
+        `SELECT DISTINCT group_id FROM transactions
+           WHERE id = ANY($1) AND user_id = $2 AND group_id IS NOT NULL`,
+        [pushedIds, userId],
+      )).rows.map(r => r.group_id);
       // The user_id guard is redundant with RLS but keeps the scope explicit.
       await client.query(
         'DELETE FROM transactions WHERE id = ANY($1) AND user_id = $2',
         [pushedIds, userId],
       );
     }
+    await pruneEmptyGroups(client, userId, groupIds);
   });
 
   res.json({ success: true });
@@ -358,6 +369,11 @@ function validateExpense(body: ExpenseBody, participantIds: Set<number>): string
   for (const p of [...payers.map(p => p.participant_id), ...splits.map(s => s.participant_id)]) {
     if (!participantIds.has(p)) return 'all payers/splits must reference participants of this bill';
   }
+  for (const s of splits) {
+    if (s.covered_by_participant_id != null && !participantIds.has(s.covered_by_participant_id)) {
+      return 'covered_by_participant_id must reference a participant of this bill';
+    }
+  }
   if (Math.abs(sum(payers.map(p => p.amount_paid)) - body.amount) > 0.01) return 'payer amounts must sum to the expense amount';
   if (Math.abs(sum(splits.map(s => s.share_amount)) - body.amount) > 0.01) return 'split shares must sum to the expense amount';
   return null;
@@ -390,8 +406,8 @@ router.post('/:id/expenses', async (req: Request, res: Response) => {
   const expense = await withTx(async (client) => {
     const e = (await client.query<BillExpense>(
       `INSERT INTO bill_expenses (bill_id, name, amount, spent_at, receipt_path, created_by)
-       VALUES ($1, $2, $3, COALESCE($4, now()), $5, $6) RETURNING *`,
-      [billId, body.name!.trim(), body.amount, body.spent_at ?? null, body.receipt_path ?? null, userId],
+       VALUES ($1, $2, $3, COALESCE($4, now()), NULL, $5) RETURNING *`,
+      [billId, body.name!.trim(), body.amount, body.spent_at ?? null, userId],
     )).rows[0];
     await insertExpenseRows(client, e.id, body);
     return e;
@@ -418,11 +434,9 @@ router.patch('/:id/expenses/:eid', async (req: Request, res: Response) => {
   if (err) { res.status(400).json({ error: err }); return; }
 
   await withTx(async (client) => {
-    const hasReceipt = 'receipt_path' in body;
     await client.query(
-      `UPDATE bill_expenses SET name = $1, amount = $2, spent_at = COALESCE($3, spent_at),
-       receipt_path = CASE WHEN $5 THEN $4::text ELSE receipt_path END, updated_at = now() WHERE id = $6`,
-      [body.name!.trim(), body.amount, body.spent_at ?? null, body.receipt_path ?? null, hasReceipt, eid],
+      `UPDATE bill_expenses SET name = $1, amount = $2, spent_at = COALESCE($3, spent_at), updated_at = now() WHERE id = $4`,
+      [body.name!.trim(), body.amount, body.spent_at ?? null, eid],
     );
     await client.query('DELETE FROM bill_expense_payers WHERE expense_id = $1', [eid]);
     await client.query('DELETE FROM bill_expense_splits WHERE expense_id = $1', [eid]);
@@ -564,6 +578,10 @@ router.get('/:id/expenses/:eid/receipt', async (req: Request, res: Response) => 
 
   const exp = await one<{ receipt_path: string | null }>('SELECT receipt_path FROM bill_expenses WHERE id = $1 AND bill_id = $2', [eid, billId]);
   if (!exp?.receipt_path) { res.status(404).json({ error: 'No receipt' }); return; }
+  if (!exp.receipt_path.startsWith(`bills/${billId}/`)) {
+    res.status(403).json({ error: 'Invalid receipt path' });
+    return;
+  }
   try {
     const url = await signedReceiptUrl(exp.receipt_path);
     res.json({ url });

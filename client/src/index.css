@@ -50,3 +50,22 @@ input[type='number']::-webkit-outer-spin-button {
 input[type='number'] {
   -moz-appearance: textfield;
 }
+
+/* Slim scrollbar for overflowing lists/dropdowns (zinc-600 thumb on transparent track). */
+@layer utilities {
+  .slim-scrollbar {
+    scrollbar-width: thin; /* Firefox */
+    scrollbar-color: #52525b transparent;
+  }
+  .slim-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .slim-scrollbar::-webkit-scrollbar-thumb {
+    background-color: #52525b;
+    border-radius: 9999px;
+  }
+  .slim-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}

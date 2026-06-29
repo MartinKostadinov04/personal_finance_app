@@ -66,9 +66,16 @@ async function getMonthsInRange(userId: string, opts: ExportOptions): Promise<Mo
 
 async function getTransactions(userId: string, monthIds: number[], typeFilter: TypeFilter): Promise<TxRow[]> {
   if (monthIds.length === 0) return [];
+  const params: unknown[] = [userId, ...monthIds];
   const placeholders = monthIds.map((_, i) => `$${i + 2}`).join(', ');
   // 'all' means all *real* flows — exclude transfers (internal moves).
-  const typeClause = typeFilter === 'all' ? "AND t.type IN ('expense', 'income')" : `AND t.type = '${typeFilter}'`;
+  let typeClause: string;
+  if (typeFilter === 'all') {
+    typeClause = "AND t.type IN ('expense', 'income')";
+  } else {
+    params.push(typeFilter);
+    typeClause = `AND t.type = $${params.length}`;
+  }
   return await query<TxRow>(`
     SELECT t.id, t.month_id, t.date, t.description, t.amount, t.type, t.bank,
            c.display_name AS category_display_name
@@ -77,7 +84,7 @@ async function getTransactions(userId: string, monthIds: number[], typeFilter: T
     WHERE t.user_id = $1 AND t.month_id IN (${placeholders})
       ${typeClause}
     ORDER BY t.date ASC, t.id ASC
-  `, [userId, ...monthIds]);
+  `, params);
 }
 
 async function getMonthSummary(userId: string, m: MonthRow): Promise<MonthSummary> {

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Upload, Plus, FolderPlus, FolderCog } from 'lucide-react';
+import { Upload, Plus, FolderPlus, FolderCog, Ungroup, Group as GroupIcon } from 'lucide-react';
 import { PageHeader } from '@/components/PageHeader';
 import { MonthYearPicker } from '@/components/MonthYearPicker';
 import { TransactionTable } from '@/components/TransactionTable';
@@ -9,7 +9,7 @@ import { ImportDialog } from '@/components/ImportDialog';
 import { GroupDialog, ManageGroupsDialog } from '@/components/GroupDialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { TransactionFilter, type TxFilter, emptyFilter } from '@/components/TransactionFilter';
 import { monthsApi, categoriesApi } from '@/lib/api';
 import { useMonth } from '@/contexts/MonthContext';
 import type { Category } from '@/lib/types';
@@ -22,8 +22,11 @@ export function Transactions() {
   const [manageOpen, setManageOpen] = useState(false);
   const [expenseSearch, setExpenseSearch] = useState('');
   const [incomeSearch, setIncomeSearch] = useState('');
-  const [expenseCatFilter, setExpenseCatFilter] = useState('all');
-  const [incomeCatFilter, setIncomeCatFilter] = useState('all');
+  const [expenseFilter, setExpenseFilter] = useState<TxFilter>(emptyFilter);
+  const [incomeFilter, setIncomeFilter] = useState<TxFilter>(emptyFilter);
+  const [expenseBounds, setExpenseBounds] = useState({ min: 0, max: 5000 });
+  const [incomeBounds, setIncomeBounds] = useState({ min: 0, max: 5000 });
+  const [expandGroups, setExpandGroups] = useState(false);
 
   const { data: monthRecord } = useQuery({
     queryKey: ['month', year, month],
@@ -49,6 +52,15 @@ export function Transactions() {
         <Button size="sm" variant="ghost" onClick={() => setManageOpen(true)}>
           <FolderCog className="h-4 w-4 mr-1.5" /> Manage
         </Button>
+        <Button
+          size="sm"
+          variant={expandGroups ? 'secondary' : 'ghost'}
+          onClick={() => setExpandGroups(v => !v)}
+          title={expandGroups ? 'Collapse each group back into one net row' : 'Show every grouped transaction as its own row'}
+        >
+          {expandGroups ? <GroupIcon className="h-4 w-4 mr-1.5" /> : <Ungroup className="h-4 w-4 mr-1.5" />}
+          {expandGroups ? 'Collapse groups' : 'Expand groups'}
+        </Button>
       </PageHeader>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
@@ -61,19 +73,12 @@ export function Transactions() {
               onChange={e => setExpenseSearch(e.target.value)}
               className="h-8 text-sm w-full md:flex-1 md:min-w-[150px]"
             />
-            <Select value={expenseCatFilter} onValueChange={setExpenseCatFilter}>
-              <SelectTrigger className="h-8 w-36 text-xs"><SelectValue placeholder="All categories" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all" className="text-xs">All categories</SelectItem>
-                <SelectItem value="groups" className="text-xs">Groups only</SelectItem>
-                {expenseCats.map(c => <SelectItem key={c.id} value={String(c.id)} className="text-xs">{c.display_name}</SelectItem>)}
-              </SelectContent>
-            </Select>
+            <TransactionFilter categories={expenseCats} bounds={expenseBounds} value={expenseFilter} onChange={setExpenseFilter} />
             <Button size="sm" className="h-8 shrink-0" onClick={() => setAddOpen('expense')}>
               <Plus className="h-3.5 w-3.5 mr-1" /> Add
             </Button>
           </div>
-          <TransactionTable monthId={monthId} type="expense" search={expenseSearch} categoryFilter={expenseCatFilter === 'all' ? '' : expenseCatFilter} />
+          <TransactionTable monthId={monthId} type="expense" search={expenseSearch} filter={expenseFilter} expandGroups={expandGroups} onAmountBounds={setExpenseBounds} />
         </div>
 
         {/* Income */}
@@ -85,19 +90,12 @@ export function Transactions() {
               onChange={e => setIncomeSearch(e.target.value)}
               className="h-8 text-sm w-full md:flex-1 md:min-w-[150px]"
             />
-            <Select value={incomeCatFilter} onValueChange={setIncomeCatFilter}>
-              <SelectTrigger className="h-8 w-36 text-xs"><SelectValue placeholder="All categories" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all" className="text-xs">All categories</SelectItem>
-                <SelectItem value="groups" className="text-xs">Groups only</SelectItem>
-                {incomeCats.map(c => <SelectItem key={c.id} value={String(c.id)} className="text-xs">{c.display_name}</SelectItem>)}
-              </SelectContent>
-            </Select>
+            <TransactionFilter categories={incomeCats} bounds={incomeBounds} value={incomeFilter} onChange={setIncomeFilter} />
             <Button size="sm" className="h-8 shrink-0" onClick={() => setAddOpen('income')}>
               <Plus className="h-3.5 w-3.5 mr-1" /> Add
             </Button>
           </div>
-          <TransactionTable monthId={monthId} type="income" search={incomeSearch} categoryFilter={incomeCatFilter === 'all' ? '' : incomeCatFilter} />
+          <TransactionTable monthId={monthId} type="income" search={incomeSearch} filter={incomeFilter} expandGroups={expandGroups} onAmountBounds={setIncomeBounds} />
         </div>
       </div>
 
