@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, memo } from 'react';
+import { useState, useMemo, useRef, memo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import {
@@ -13,12 +13,15 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sh
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { CategoryBadge } from './CategoryBadge';
+import { CategoryPicker } from './CategoryPicker';
 import { BankBadge } from './BankBadge';
 import { DatePicker } from './DatePicker';
-import { transactionsApi, categoriesApi } from '@/lib/api';
+import { EditGroupDialog } from './GroupDialog';
+import { transactionsApi, categoriesApi, groupsApi } from '@/lib/api';
 import { cn, formatCurrency, formatDate } from '@/lib/utils';
 import { formatDisplayDate } from '@/lib/dates';
 import type { Transaction, Category } from '@/lib/types';
+import { type TxFilter, emptyFilter } from '@/components/TransactionFilter';
 
 // Per-column styling hook: columns set meta.className to control their <th>/<td>.
 // 'w-0 whitespace-nowrap' makes a column shrink-to-fit its widest cell
@@ -53,22 +56,22 @@ interface TransactionTableProps {
   monthId: number;
   type: 'expense' | 'income';
   search?: string;
-  categoryFilter?: string;
+  filter?: TxFilter;
+  expandGroups?: boolean;
+  onAmountBounds?: (b: { min: number; max: number }) => void;
 }
 
-export const TransactionTable = memo(function TransactionTable({ monthId, type, search, categoryFilter }: TransactionTableProps) {
+export const TransactionTable = memo(function TransactionTable({ monthId, type, search, filter = emptyFilter, expandGroups = false, onAmountBounds }: TransactionTableProps) {
   const qc = useQueryClient();
   const [sorting, setSorting] = useState<SortingState>([{ id: 'date', desc: true }]);
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 10 });
   const [editTx, setEditTx] = useState<Transaction | null>(null);
+  const [editGroupId, setEditGroupId] = useState<number | null>(null);
   const [detail, setDetail] = useState<{ tx: Transaction; x: number; y: number } | null>(null);
 
-  // 'groups' is a sentinel filter (show only group rows); a numeric value filters
-  // individual rows by real category id.
-  const catId = categoryFilter && categoryFilter !== 'groups' ? parseInt(categoryFilter) : undefined;
   const { data: rawTransactions, isLoading } = useQuery({
-    queryKey: ['transactions', { monthId, type, search, categoryFilter }],
-    queryFn: () => transactionsApi.getAll({ monthId, type, search, categoryId: catId }),
+    queryKey: ['transactions', { monthId, type, search }],
+    queryFn: () => transactionsApi.getAll({ monthId, type, search }),
     enabled: !!monthId,
   });
   // Stable reference: avoids passing a new [] to useReactTable on every render
@@ -91,11 +94,31 @@ export const TransactionTable = memo(function TransactionTable({ monthId, type, 
   // synthetic row per group whose month-net places it in THIS table (net spend →
   // expense table; net positive → income table).
   const tableData = useMemo(() => {
-    // 'groups' → only group rows; a specific category → only its individual rows
-    // (no group rows, since a group has no single category); else → both.
-    const onlyGroups = categoryFilter === 'groups';
-    const showGroups = !categoryFilter || onlyGroups;
-    const ungrouped = onlyGroups ? [] : transactions.filter(t => t.group_id == null);
+    const onlyGroups = filter.groupsOnly;
+
+    const applyFilter = (t: Transaction): boolean => {
+      if (filter.banks.length > 0 && !filter.banks.includes(t.bank)) return false;
+      if (filter.categoryIds.length > 0 && (t.category_id == null || !filter.categoryIds.includes(t.category_id))) return false;
+      const a = Math.abs(t.amount);
+      if (filter.amountMin != null && a < filter.amountMin) return false;
+      if (filter.amountMax != null && a > filter.amountMax) return false;
+      if (filter.dateFrom && t.date < filter.dateFrom) return false;
+      if (filter.dateTo && t.date > filter.dateTo) return false;
+      return true;
+    };
+
+    // Expanded view: show each grouped member as its own row, labelled
+    // group:{name} in the group's color (instead of one collapsed net row).
+    if (expandGroups) {
+      const base = onlyGroups ? transactions.filter(t => t.group_id != null) : transactions;
+      return base.filter(applyFilter).map(t => t.group_id != null
+        ? { ...t, category_display_name: `group:${t.group_name ?? 'group'}`, category_color: t.group_color ?? '#71717a' }
+        : t);
+    }
+
+    // When a category filter is active, suppress group rows (groups have no single category).
+    const showGroups = !filter.categoryIds.length || onlyGroups;
+    const ungrouped = onlyGroups ? [] : transactions.filter(t => t.group_id == null && applyFilter(t));
 
     const byGroup = new Map<number, { name: string; color: string; exp: number; inc: number; lastDate: string; bill_id: number | null; tx_id: number | null; memberCount: number }>();
     for (const m of groupedMembers) {
@@ -122,11 +145,17 @@ export const TransactionTable = memo(function TransactionTable({ monthId, type, 
         const members = groupedMembers.filter(m => m.group_id === gid);
         if (!g.name.toLowerCase().includes(term) && !members.some(m => txMatches(m, term))) continue;
       }
+      // Apply amount/date filter to group rows (bank filter skipped: groups can span banks).
+      const absNet = Math.abs(net);
+      if (filter.amountMin != null && absNet < filter.amountMin) continue;
+      if (filter.amountMax != null && absNet > filter.amountMax) continue;
+      if (filter.dateFrom && g.lastDate < filter.dateFrom) continue;
+      if (filter.dateTo && g.lastDate > filter.dateTo) continue;
       groupRows.push({
         id: g.tx_id ?? -gid,
         month_id: monthId,
         date: g.lastDate,
-        amount: Math.abs(net),
+        amount: absNet,
         description: g.name,
         raw_description: null,
         type,
@@ -143,7 +172,7 @@ export const TransactionTable = memo(function TransactionTable({ monthId, type, 
       });
     }
     return [...ungrouped, ...groupRows];
-  }, [transactions, groupedMembers, type, search, monthId, categoryFilter]);
+  }, [transactions, groupedMembers, type, search, monthId, filter, expandGroups]);
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => transactionsApi.delete(id),
@@ -151,12 +180,37 @@ export const TransactionTable = memo(function TransactionTable({ monthId, type, 
       qc.invalidateQueries({ queryKey: ['transactions'] });
       qc.invalidateQueries({ queryKey: ['summary'] });
       qc.invalidateQueries({ queryKey: ['allocation'] });
+      // Deleting a transaction may prune a now-empty group server-side.
+      qc.invalidateQueries({ queryKey: ['groups'] });
     },
   });
 
   // Stable ref so columns memo doesn't re-create on every mutation object reference change
   const deleteMutateRef = useRef(deleteMutation.mutate);
   deleteMutateRef.current = deleteMutation.mutate;
+
+  const categoryMutation = useMutation({
+    mutationFn: ({ id, category_id }: { id: number; category_id: number | null }) =>
+      transactionsApi.update(id, { category_id }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['transactions'] });
+      qc.invalidateQueries({ queryKey: ['summary'] });
+      qc.invalidateQueries({ queryKey: ['allocation'] });
+    },
+  });
+  const categoryMutateRef = useRef(categoryMutation.mutate);
+  categoryMutateRef.current = categoryMutation.mutate;
+
+  // Ref so category column can read current categories without being in the columns dep array.
+  const categoriesRef = useRef(categories);
+  categoriesRef.current = categories;
+
+  useEffect(() => {
+    if (!onAmountBounds || !rawTransactions?.length) return;
+    const max = Math.ceil(Math.max(...rawTransactions.map(t => Math.abs(t.amount))));
+    onAmountBounds({ min: 0, max });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rawTransactions]);
 
   const navigate = useNavigate();
 
@@ -168,12 +222,22 @@ export const TransactionTable = memo(function TransactionTable({ monthId, type, 
     }),
     col.accessor('category_id', {
       header: 'Category',
-      // Read-only badge — category is changed via the edit sheet (pencil).
       cell: i => {
         const tx = i.row.original;
-        return tx.category_display_name
-          ? <CategoryBadge category={{ display_name: tx.category_display_name, color: tx.category_color ?? '#71717a' }} />
-          : <span className="text-xs text-zinc-600">Uncategorized</span>;
+        // Grouped/bill rows use a read-only badge; individual transactions get inline picker.
+        if (tx.group_id != null || tx.bill_id != null) {
+          return tx.category_display_name
+            ? <CategoryBadge category={{ display_name: tx.category_display_name, color: tx.category_color ?? '#71717a' }} />
+            : <span className="text-xs text-zinc-600">Uncategorized</span>;
+        }
+        const relevant = categoriesRef.current.filter(c => c.type === tx.type && c.is_active);
+        return (
+          <CategoryPicker
+            categories={relevant}
+            value={tx.category_id}
+            onChange={catId => categoryMutateRef.current({ id: tx.id, category_id: catId })}
+          />
+        );
       },
       meta: { className: 'w-0 whitespace-nowrap' },
     }),
@@ -227,33 +291,17 @@ export const TransactionTable = memo(function TransactionTable({ monthId, type, 
           );
         }
 
-        if (tx.group_id != null) {
-          // Single-member group (e.g. bill was deleted, transaction orphaned): show delete only.
-          // Multi-member groups use a synthetic negative id and have no single tx to target.
-          if (tx.id > 0) {
-            return (
-              <div className="flex gap-1 justify-end">
-                <AlertDialog>
-                  <AlertDialogTrigger asChild>
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-rose-500 hover:text-rose-400">
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>Delete transaction?</AlertDialogTitle>
-                      <AlertDialogDescription>This cannot be undone.</AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Cancel</AlertDialogCancel>
-                      <AlertDialogAction className="bg-rose-600 hover:bg-rose-700" onClick={() => deleteMutateRef.current(tx.id)}>Delete</AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
-              </div>
-            );
-          }
-          return null;
+        // Collapsed group row → edit the group (re-pick its transactions). In the
+        // expanded view, a member is a real transaction and falls through to the
+        // normal edit/delete actions below.
+        if (tx.group_id != null && !expandGroups) {
+          return (
+            <div className="flex gap-1 justify-end">
+              <Button variant="ghost" size="icon" className="h-7 w-7" title="Edit group" onClick={() => setEditGroupId(tx.group_id!)}>
+                <Pencil className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          );
         }
 
         return (
@@ -283,7 +331,7 @@ export const TransactionTable = memo(function TransactionTable({ monthId, type, 
       },
       meta: { className: 'w-0 whitespace-nowrap' },
     }),
-  ], [type, navigate]);
+  ], [type, navigate, expandGroups]);
 
   const table = useReactTable({
     data: tableData,
@@ -301,7 +349,8 @@ export const TransactionTable = memo(function TransactionTable({ monthId, type, 
   // For a mixed group this intentionally differs from the Dashboard's gross
   // expense/income totals (flagged with a note below).
   const total = tableData.reduce((s, t) => s + t.amount, 0);
-  const hasGroupRow = tableData.some(t => t.group_id != null);
+  // Only the collapsed view shows synthetic net-of-group rows; expanded rows are gross.
+  const hasGroupRow = !expandGroups && tableData.some(t => t.group_id != null);
 
   if (isLoading) return <div className="text-zinc-500 text-sm py-4">Loading…</div>;
 
@@ -397,9 +446,24 @@ export const TransactionTable = memo(function TransactionTable({ monthId, type, 
         </Popover>
       )}
 
-      {table.getPageCount() > 1 && (
-        <div className="flex items-center justify-between mt-2 text-xs text-zinc-400">
-          <span>Page {table.getState().pagination.pageIndex + 1} of {table.getPageCount()}</span>
+      <div className="flex items-center justify-between mt-2 text-xs text-zinc-400">
+        <div className="flex items-center gap-2">
+          {table.getPageCount() > 1 && (
+            <span>Page {table.getState().pagination.pageIndex + 1} of {table.getPageCount()}</span>
+          )}
+          <Select
+            value={String(table.getState().pagination.pageSize)}
+            onValueChange={v => { table.setPageSize(Number(v)); table.setPageIndex(0); }}
+          >
+            <SelectTrigger className="h-7 w-24 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {[10, 25, 50, 100].map(n => (
+                <SelectItem key={n} value={String(n)} className="text-xs">{n} / page</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        {table.getPageCount() > 1 && (
           <div className="flex gap-1">
             <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => table.previousPage()} disabled={!table.getCanPreviousPage()}>
               <ChevronLeft className="h-3.5 w-3.5" />
@@ -408,8 +472,8 @@ export const TransactionTable = memo(function TransactionTable({ monthId, type, 
               <ChevronRight className="h-3.5 w-3.5" />
             </Button>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {editTx && (
         <EditSheet
@@ -420,10 +484,14 @@ export const TransactionTable = memo(function TransactionTable({ monthId, type, 
             qc.invalidateQueries({ queryKey: ['transactions'] });
             qc.invalidateQueries({ queryKey: ['summary'] });
             qc.invalidateQueries({ queryKey: ['allocation'] });
+            // Group membership may have changed (and emptied groups pruned).
+            qc.invalidateQueries({ queryKey: ['groups'] });
             setEditTx(null);
           }}
         />
       )}
+
+      <EditGroupDialog groupId={editGroupId} onOpenChange={open => { if (!open) setEditGroupId(null); }} />
     </div>
   );
 });
@@ -442,7 +510,7 @@ function GroupBubble({ group, members }: { group: Transaction; members: Transact
         <span className="text-xs text-zinc-500 shrink-0 ml-auto">{members.length} item{members.length !== 1 ? 's' : ''}</span>
       </div>
 
-      <div className="max-h-60 overflow-y-auto -mx-1 px-1 divide-y divide-zinc-800/60">
+      <div className="max-h-60 overflow-y-auto slim-scrollbar -mx-1 px-1 divide-y divide-zinc-800/60">
         {sorted.map(m => (
           <div key={m.id} className="flex items-center gap-2 py-1">
             <span className="text-xs text-zinc-500 tabular-nums shrink-0">{formatDate(m.date)}</span>
@@ -471,9 +539,10 @@ function GroupBubble({ group, members }: { group: Transaction; members: Transact
 }
 
 function EditSheet({ tx, categories, onClose, onSaved }: { tx: Transaction; categories: Category[]; onClose: () => void; onSaved: () => void }) {
-  const [form, setForm] = useState({ date: tx.date, description: tx.description, amount: String(tx.amount), category_id: String(tx.category_id ?? ''), bank: tx.bank });
+  const [form, setForm] = useState({ date: tx.date, description: tx.description, amount: String(tx.amount), category_id: String(tx.category_id ?? ''), bank: tx.bank, group_id: String(tx.group_id ?? '') });
   const [saving, setSaving] = useState(false);
   const relevant = categories.filter(c => c.type === tx.type && c.is_active);
+  const { data: groups = [] } = useQuery({ queryKey: ['groups'], queryFn: () => groupsApi.getAll() });
 
   const save = async () => {
     setSaving(true);
@@ -488,6 +557,15 @@ function EditSheet({ tx, categories, onClose, onSaved }: { tx: Transaction; cate
         year: d.getFullYear(),
         month: d.getMonth() + 1,
       });
+      // Reconcile group membership separately — the transactions PUT never touches
+      // group_id. Adding to a group reassigns it; the server prunes any group this
+      // empties.
+      const oldG = tx.group_id ?? null;
+      const newG = form.group_id ? parseInt(form.group_id) : null;
+      if (newG !== oldG) {
+        if (newG != null) await groupsApi.setMembers(newG, { add: [tx.id] });
+        else if (oldG != null) await groupsApi.setMembers(oldG, { remove: [tx.id] });
+      }
       onSaved();
     } finally { setSaving(false); }
   };
@@ -527,6 +605,23 @@ function EditSheet({ tx, categories, onClose, onSaved }: { tx: Transaction; cate
                 <SelectItem value="santander">Santander</SelectItem>
                 <SelectItem value="fibank">Fibank</SelectItem>
                 <SelectItem value="manual">Manual</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs text-zinc-400">Group</label>
+            <Select value={form.group_id || 'none'} onValueChange={v => setForm(f => ({ ...f, group_id: v === 'none' ? '' : v }))}>
+              <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">None</SelectItem>
+                {groups.map(g => (
+                  <SelectItem key={g.id} value={String(g.id)}>
+                    <span className="inline-flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: g.color }} />
+                      {g.name}
+                    </span>
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>

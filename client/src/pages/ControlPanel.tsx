@@ -634,7 +634,7 @@ function AddRuleDialog({ open, onOpenChange, initialYear, initialMonth }: {
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) reset(); onOpenChange(v); }}>
-      <DialogContent className="w-auto max-w-[90vw]">
+      <DialogContent className="w-full sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Add Recurring Rule</DialogTitle>
         </DialogHeader>
@@ -876,7 +876,7 @@ function EditRuleDialog({ rule, onOpenChange }: {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-auto max-w-[90vw]">
+      <DialogContent className="w-full sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Edit Rule</DialogTitle>
         </DialogHeader>
