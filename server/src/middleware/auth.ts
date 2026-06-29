@@ -28,6 +28,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   try {
     const { payload } = await jwtVerify(token, getJWKS(), {
       issuer: `${process.env.SUPABASE_URL}/auth/v1`,
+      algorithms: ['ES256'],
     });
     req.userId = payload.sub;
     req.userEmail = (payload as JWTPayload & { email?: string }).email ?? null;

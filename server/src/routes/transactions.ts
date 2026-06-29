@@ -1,8 +1,9 @@
 import { Router, Request, Response } from 'express';
-import { query, one } from '../db/pg';
+import { query, one, withTx } from '../db/pg';
 import { parseId, BadRequest } from '../lib/http';
 import { resolveMonthId } from '../db/months';
 import { userOwnsMonth, userOwnsCategory } from '../db/ownership';
+import { pruneEmptyGroups } from '../lib/groups';
 import { Transaction } from '../types';
 
 const router = Router();
@@ -25,9 +26,17 @@ router.get('/', async (req: Request, res: Response) => {
     WHERE t.user_id = ${p(userId)}
   `;
 
-  if (monthId) { q += ` AND t.month_id = ${p(parseInt(monthId))}`; }
+  if (monthId) {
+    const mid = parseInt(monthId);
+    if (isNaN(mid)) { res.status(400).json({ error: 'invalid monthId' }); return; }
+    q += ` AND t.month_id = ${p(mid)}`;
+  }
   if (type) { q += ` AND t.type = ${p(type)}`; }
-  if (categoryId) { q += ` AND t.category_id = ${p(parseInt(categoryId))}`; }
+  if (categoryId) {
+    const cid = parseInt(categoryId);
+    if (isNaN(cid)) { res.status(400).json({ error: 'invalid categoryId' }); return; }
+    q += ` AND t.category_id = ${p(cid)}`;
+  }
   if (bank) { q += ` AND t.bank = ${p(bank)}`; }
   if (grouped === '1') { q += ' AND t.group_id IS NOT NULL'; }
   if (search) {
@@ -122,7 +131,16 @@ router.put('/:id', async (req: Request, res: Response) => {
 
 router.delete('/:id', async (req: Request, res: Response) => {
   const userId = req.userId!;
-  await query('DELETE FROM transactions WHERE id = $1 AND user_id = $2', [parseId(req.params.id), userId]);
+  const id = parseId(req.params.id);
+  // Capture the (possibly grouped) row's group_id so we can drop the group if this
+  // was its last member — groups are never meant to linger empty.
+  await withTx(async (client) => {
+    const r = await client.query<{ group_id: number | null }>(
+      'DELETE FROM transactions WHERE id = $1 AND user_id = $2 RETURNING group_id',
+      [id, userId],
+    );
+    await pruneEmptyGroups(client, userId, [r.rows[0]?.group_id]);
+  });
   res.json({ success: true });
 });
 
